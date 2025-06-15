@@ -7,11 +7,14 @@ use crate::cfg::CircCfg;
 use crate::ir::term::*;
 use crate::target::plonkish::VarType;
 use circ_fields::{FieldT, FieldV};
+use circ_opt::FieldDivByZero;
 use im::HashSet;
-use log::{debug};
+use log::{debug, trace};
 
 
 use fxhash::{FxHashMap};
+use rug::ops::Pow;
+use rug::Integer;
 
 use std::cell::RefCell;
 use std::fmt::Display;
@@ -133,8 +136,6 @@ struct ToPlonk<'cfg> {
     cfg: &'cfg CircCfg,
     field: FieldT,
     used_vars: HashSet<String>,
-    /// Map from (operator, arity) to metric.
-    op_in_progress: Option<(Op, usize)>,
 }
 
 impl<'cfg> ToPlonk<'cfg> {
@@ -155,7 +156,6 @@ impl<'cfg> ToPlonk<'cfg> {
             one,
             field,
             cfg,
-            op_in_progress: None,
         }
     }
 
@@ -418,7 +418,1129 @@ impl<'cfg> ToPlonk<'cfg> {
 
     // ... Additional helper methods would continue here following similar patterns
     // This is a substantial refactoring, so I'm showing the key structural changes
+      /// Given `xs`, an iterator of bit-valued wires, returns the XOR of all of them.
+      fn nary_xor<I: ExactSizeIterator<Item = Wire>>(&mut self, mut xs: I) -> Wire {
+        let n = xs.len();
+        if n > 3 {
+            let sum = xs.fold(self.zero.clone(), |s, i| self.add(s, i));
+            let sum_bits = self.bitify("sum", &sum, bitsize(n), false);
+            assert!(n > 0);
+            sum_bits.into_iter().next().unwrap() // safe b/c assert
+        } else {
+            let first = xs.next().expect("empty XOR");
+            xs.fold(first, |a, b| {
+                // XOR: a + b - 2*a*b
+                let sum = self.add(a.clone(), b.clone());
+                let product = self.mul(a, b);
+                let double_product = self.mul_const(product, 2);
+                self.sub(sum, double_product)
+            })
+        }
+    }
+
+    /// Given a bit-values `a`, returns its (boolean) not.
+    fn bool_not(&mut self, a: Wire) -> Wire {
+        // NOT: 1 - a
+        self.sub(self.one.clone(), a)
+    }
+
+    /// Given `xs`, an iterator of bit-valued wires, returns the AND of all of them.
+    fn nary_and<I: ExactSizeIterator<Item = Wire>>(&mut self, mut xs: I) -> Wire {
+        let n = xs.len();
+        if n <= 3 {
+            let first = xs.next().expect("empty AND");
+            xs.fold(first, |a, x| self.mul(a, x))
+        } else {
+            // De Morgan's law: AND = NOT(OR(NOT(a), NOT(b), ...))
+            let negs: Vec<Wire> = xs.map(|x| self.bool_not(x)).collect();
+            let a = self.nary_or(negs.into_iter());
+            self.bool_not(a)
+        }
+    }
+
+    /// Given `xs`, an iterator of bit-valued wires, returns the OR of all of them.
+    fn nary_or<I: ExactSizeIterator<Item = Wire>>(&mut self, xs: I) -> Wire {
+        let n = xs.len();
+        if n <= 3 {
+            // De Morgan's law: OR = NOT(AND(NOT(a), NOT(b), ...))
+            let negs: Vec<Wire> = xs.map(|x| self.bool_not(x)).collect();
+            let a = self.nary_and(negs.into_iter());
+            self.bool_not(a)
+        } else {
+            let sum = xs.fold(self.zero.clone(), |s, x| self.add(s, x));
+            let z = self.is_zero(sum);
+            self.bool_not(z)
+        }
+    }
+
+    /// Given a bit-valued `c`, and branches `t` and `f`, returns a wire which is `t` iff `c`, else `f`.
+    fn ite(&mut self, c: Wire, t: Wire, f: Wire) -> Wire {
+        // ITE: c * (t - f) + f = c * t + (1 - c) * f
+        let diff = self.sub(t, f.clone());
+        let product = self.mul(c, diff);
+        self.add(product, f)
+    }
+
+    /// Embed this variable 
+    fn embed_var(&mut self, var: &Term, ty: VarType) {
+        assert!(
+            !self.cache.contains_key(var),
+            "already have var {}",
+            var.op()
+        );
+        assert!(!matches!(ty, VarType::CWit), "Unimplemented");
+        if !self.used_vars.contains(var.as_var_name()) {
+            return;
+        }
+        debug!("Embed var: {}", var.op());
+        
+        let public = matches!(ty, VarType::Inst);
+        match var.op() {
+            Op::Var(v) if matches!(&v.sort, Sort::Bool) => {
+                let comp = term![Op::Ite; var.clone(), self.one_term(), self.zero_term()];
+                let wire = self.fresh_var(&v.name, comp, ty);
+                if !public {
+                    self.enforce_bit(wire.clone());
+                }
+                self.cache.insert(var.clone(), EmbeddedTerm::Bool(wire));
+                self.embed.borrow_mut().insert(var.clone());
+            }
+            Op::Var(v) if v.sort.is_bv() => {
+                let public = matches!(ty, VarType::Inst);
+                let wire = self.fresh_var(
+                    &v.name,
+                    term![Op::new_ubv_to_pf(self.field.clone()); var.clone()],
+                    ty,
+                );
+                self.set_bv_uint(var.clone(), wire, v.sort.as_bv());
+                if !public {
+                    self.get_bv_bits(var);
+                }
+            }
+            Op::Var(v) if v.sort.is_pf() => {
+                assert_eq!(v.sort.as_pf(), &self.field);
+                let wire = self.fresh_var(&v.name, var.clone(), ty);
+                self.cache.insert(var.clone(), EmbeddedTerm::Field(wire));
+                self.embed.borrow_mut().insert(var.clone());
+            }
+            o => unreachable!("Unhandled variable operator {}", o),
+        }
+    }
+
+
+    /// Boolean AND operation for two wires
+    fn bool_and(&mut self, a: Wire, b: Wire) -> Wire {
+        let and_term = term![PF_MUL; 
+            self.plonk.wire_values[&a].clone(), 
+            self.plonk.wire_values[&b].clone()
+        ];
+        let result = self.fresh_bit("and", and_term);
+        
+        // a * b - result = 0  =>  q_m * a * b + q_o * result = 0
+        self.constraint(
+            0, 0, -1, 1, 0,  // q_l=0, q_r=0, q_o=-1, q_m=1, q_c=0
+            a, b, result.clone()
+        );
+        result
+    }
+
+    /// Boolean OR operation: a + b - a*b
+    fn bool_or(&mut self, a: Wire, b: Wire) -> Wire {
+        let or_term = term![PF_ADD;
+            term![PF_ADD; self.plonk.wire_values[&a].clone(), self.plonk.wire_values[&b].clone()],
+            term![PF_NEG; term![PF_MUL; self.plonk.wire_values[&a].clone(), self.plonk.wire_values[&b].clone()]]
+        ];
+        let result = self.fresh_bit("or", or_term);
+        
+        // a + b - a*b - result = 0  =>  q_l * a + q_r * b + q_m * (-a) * b + q_o * result = 0
+        self.constraint(
+            1, 1, -1, -1, 0,  // q_l=1, q_r=1, q_o=-1, q_m=-1, q_c=0
+            a, b, result.clone()
+        );
+        result
+    }
+
+        /// Boolean XOR operation: a + b - 2*a*b
+        fn bool_xor(&mut self, a: Wire, b: Wire) -> Wire {
+            let xor_term = term![PF_ADD;
+                term![PF_ADD; self.plonk.wire_values[&a].clone(), self.plonk.wire_values[&b].clone()],
+                term![PF_MUL; 
+                    pf_lit(self.field.new_v(-2)),
+                    term![PF_MUL; self.plonk.wire_values[&a].clone(), self.plonk.wire_values[&b].clone()]
+                ]
+            ];
+            let result = self.fresh_bit("xor", xor_term);
+            
+            // a + b - 2*a*b - result = 0  =>  q_l * a + q_r * b + q_m * (-2) * a * b + q_o * result = 0
+            self.constraint(
+                1, 1, -1, -2, 0,  // q_l=1, q_r=1, q_o=-1, q_m=-2, q_c=0
+                a, b, result.clone()
+            );
+            result
+        }
+    
+
+
+    /// If-then-else: returns condition ? then_val : else_val
+    /*fn ite(&mut self, condition: Wire, then_val: Wire, else_val: &Wire) -> Wire {
+        let ite_term = term![Op::Ite; 
+            self.plonk.wire_values[&condition].clone(),
+            self.plonk.wire_values[&then_val].clone(),
+            self.plonk.wire_values[else_val].clone()
+        ];
+        let result = self.fresh_wit("ite", ite_term);
+        
+        // condition * (then_val - else_val) + else_val - result = 0
+        // First compute diff = then_val - else_val
+        let diff = self.sub(then_val, else_val.clone());
+        
+        // Then condition * diff + else_val - result = 0
+        // q_m * condition * diff + q_r * else_val + q_o * result = 0
+        self.constraint(
+            0, 1, -1, 1, 0,  // q_l=0, q_r=1, q_o=-1, q_m=1, q_c=0
+            condition, else_val.clone(), result.clone()
+        );
+        result
+    }*/
+
+    fn embed(&mut self, t: Term) {
+        debug!("Embed: {}", t);
+        let visited_set_rc = self.embed.clone();
+        for c in
+            extras::PostOrderSkipIter::new(t, &move |s: &Term| visited_set_rc.borrow().contains(s))
+        {
+            assert!(!self.embed.borrow().contains(&c));
+            debug!("Embed op: {}", c.op());
+            // Handle field access once and for all
+            if let Op::Field(i) = &c.op() {
+                if !self.cache.contains_key(&c) {
+                    let t = self.get_field(&c.cs()[0], *i);
+                    self.embed.borrow_mut().insert(c.clone());
+                    self.cache.insert(c, t);
+                }
+            } else {
+                match check(&c) {
+                    Sort::Bool => {
+                        self.embed_bool(c);
+                    }
+                    Sort::BitVector(_) => {
+                        self.embed_bv(c);
+                    }
+                    Sort::Field(_) => {
+                        self.embed_pf(c);
+                    }
+                    Sort::Tuple(_) => {
+                        panic!("Cannot embed tuple term: {}", c)
+                    }
+                    s => panic!("Unsupported sort in embed: {:?}", s),
+                }
+            }
+        }
+    }
+
+    fn get_field(&self, tuple_term: &Term, field: usize) -> EmbeddedTerm {
+        match self.cache.get(tuple_term) {
+            Some(EmbeddedTerm::Tuple(v)) => v[field].clone(),
+            _ => panic!("No tuple for {}", tuple_term),
+        }
+    }
+
+    fn embed_eq(&mut self, a: &Term, b: &Term) -> Wire {
+        match check(a) {
+            Sort::Bool => {
+                let a = self.get_bool(a).clone();
+                let b = self.get_bool(b).clone();
+                self.bits_are_equal(a, b)
+            }
+            Sort::BitVector(_) => {
+                let a = self.get_bv_uint(a);
+                let b = self.get_bv_uint(b);
+                self.are_equal(a, b)
+            }
+            Sort::Field(_) => {
+                let a = self.get_pf(a).clone();
+                let b = self.get_pf(b).clone();
+                self.are_equal(a, b)
+            }
+            Sort::Tuple(sorts) => {
+                let n = sorts.len();
+                let eqs: Vec<Term> = (0..n).map(|i| {
+                    term![Op::Eq; term![Op::Field(i); a.clone()], term![Op::Field(i); b.clone()]]
+                }).collect();
+                let conj = term(Op::BoolNaryOp(BoolNaryOp::And), eqs);
+                self.embed(conj.clone());
+                self.get_bool(&conj).clone()
+            }
+            s => panic!("Unimplemented sort for Eq: {:?}", s),
+        }
+    }
+
+    fn assert_eq(&mut self, a: &Term, b: &Term) {
+        match check(a) {
+            Sort::Bool => {
+                let a = self.get_bool(a).clone();
+                let b = self.get_bool(b).clone();
+                let diff = self.sub(a, b);
+                self.assert_zero(diff);
+            }
+            Sort::BitVector(_) => {
+                let a = self.get_bv_uint(a);
+                let b = self.get_bv_uint(b);
+                let diff = self.sub(a, b);
+                self.assert_zero(diff);
+            }
+            Sort::Field(_) => {
+                let a = self.get_pf(a).clone();
+                let b = self.get_pf(b).clone();
+                let diff = self.sub(a, b);
+                self.assert_zero(diff);
+            }
+            s => panic!("Unimplemented sort for Eq: {:?}", s),
+        }
+    }
+
+    fn embed_bool(&mut self, c: Term) -> Wire {
+        debug_assert!(check(&c) == Sort::Bool);
+        
+        if !self.cache.contains_key(&c) {
+            let wire = match &c.op() {
+                Op::Var(..) => panic!("call embed_var instead"),
+                Op::Const(v) => {
+                    if v.as_bool() {
+                        self.one.clone()
+                    } else {
+                        self.zero.clone()
+                    }
+                },
+                Op::Eq => self.embed_eq(&c.cs()[0], &c.cs()[1]),
+                Op::Ite => {
+                    let cond = self.get_bool(&c.cs()[0]).clone();
+                    let then_val = self.get_bool(&c.cs()[1]).clone();
+                    let else_val = self.get_bool(&c.cs()[2]).clone();
+                    self.ite(cond, then_val, else_val)
+                }
+                Op::BoolMaj => {
+                    let a = self.get_bool(&c.cs()[0]).clone();
+                    let b = self.get_bool(&c.cs()[1]).clone();
+                    let c_val = self.get_bool(&c.cs()[2]).clone();
+                    // Majority: ab + bc + ac - 2abc
+                    // m = ab + c(b + a - 2ab) where i = ab
+                    // m = i + c(b + a - 2i)
+                    let ab = self.mul(a.clone(), b.clone());
+                    let sum_ab = self.add(a, b);
+                    let double_ab = self.mul_const(ab.clone(), 2);
+                    let inner = self.sub(sum_ab, double_ab);
+                    let c_inner = self.mul(c_val, inner);
+                    self.add(ab, c_inner)
+                }
+                Op::Not => {
+                    let a = self.get_bool(&c.cs()[0]).clone();
+                    self.bool_not(a)
+                }
+                Op::Implies => {
+                    let a = self.get_bool(&c.cs()[0]).clone();
+                    let b = self.get_bool(&c.cs()[1]).clone();
+                    let not_a = self.bool_not(a);
+                    self.nary_or(vec![not_a, b].into_iter())
+                }
+                Op::BoolNaryOp(o) => {
+                    let args = c
+                        .cs()
+                        .iter()
+                        .map(|c| self.get_bool(c).clone())
+                        .collect::<Vec<_>>();
+                    match o {
+                        BoolNaryOp::Or => self.nary_or(args.into_iter()),
+                        BoolNaryOp::And => self.nary_and(args.into_iter()),
+                        BoolNaryOp::Xor => self.nary_xor(args.into_iter()),
+                    }
+                }
+                Op::BvBit(i) => {
+                    let a = self.get_bv_bits(&c.cs()[0]);
+                    a[*i].clone()
+                }
+                Op::BvBinPred(o) => {
+                    let n = check(&c.cs()[0]).as_bv();
+                    use BvBinPred::*;
+                    match o {
+                        Sge => self.bv_cmp(n, true, false, &c.cs()[0], &c.cs()[1]),
+                        Sgt => self.bv_cmp(n, true, true, &c.cs()[0], &c.cs()[1]),
+                        Uge => self.bv_cmp(n, false, false, &c.cs()[0], &c.cs()[1]),
+                        Ugt => self.bv_cmp(n, false, true, &c.cs()[0], &c.cs()[1]),
+                        Sle => self.bv_cmp(n, true, false, &c.cs()[1], &c.cs()[0]),
+                        Slt => self.bv_cmp(n, true, true, &c.cs()[1], &c.cs()[0]),
+                        Ule => self.bv_cmp(n, false, false, &c.cs()[1], &c.cs()[0]),
+                        Ult => self.bv_cmp(n, false, true, &c.cs()[1], &c.cs()[0]),
+                    }
+                }
+                Op::PfToBoolTrusted => {
+                    // we trust that this is zero or one
+                    self.get_pf(&c.cs()[0]).clone()
+                }
+                _ => panic!("Non-boolean in embed_bool: {}", c),
+            };
+            self.cache.insert(c.clone(), EmbeddedTerm::Bool(wire));
+        }
+        
+        self.get_bool(&c).clone()
+    }
+
+    // Helper methods to get embedded terms
+    fn get_bool(&self, term: &Term) -> &Wire {
+        match self.cache.get(term) {
+            Some(EmbeddedTerm::Bool(wire)) => wire,
+            _ => panic!("No boolean wire for term: {}", term),
+        }
+    }
+
+    fn get_pf(&self, term: &Term) -> &Wire {
+        match self.cache.get(term) {
+            Some(EmbeddedTerm::Field(wire)) => wire,
+            _ => panic!("No field wire for term: {}", term),
+        }
+    }
+
+    /*fn get_bv_uint(&self, term: &Term) -> Wire {
+        match self.cache.get(term) {
+            Some(EmbeddedTerm::Bv(entry)) => {
+                entry.borrow().uint.clone().expect("BV uint not created")
+            },
+            _ => panic!("No bitvector uint for term: {}", term),
+        }
+    }*/
+
+    fn get_bv_bits(&mut self, term: &Term) -> Vec<Wire> {
+        let entry = match self.cache.get(term) {
+            Some(EmbeddedTerm::Bv(entry)) => entry.clone(),
+            _ => panic!("No bitvector for term: {}", term),
+        };
+        
+        if entry.borrow().bits.is_empty() {
+            let width = entry.borrow().width;
+            let uint_wire = entry.borrow().uint.clone().expect("BV uint not created");
+            let bits = self.decomp("bv_bits", &uint_wire, width);
+            entry.borrow_mut().bits = bits.clone();
+            bits
+        } else {
+            entry.borrow().bits.clone()
+        }
+    }
+
+    fn set_bv_uint(&mut self, term: Term, wire: Wire, width: usize) {
+        let entry = Rc::new(RefCell::new(BvEntry {
+            width,
+            uint: Some(wire),
+            bits: Vec::new(),
+        }));
+        self.cache.insert(term, EmbeddedTerm::Bv(entry));
+    }
+
+    /// Compare two bitvectors
+    fn bv_cmp(&mut self, width: usize, signed: bool, strict: bool, a: &Term, b: &Term) -> Wire {
+        let a_bits = self.get_bv_bits(a);
+        let b_bits = self.get_bv_bits(b);
+        
+        // For simplicity, convert to comparison on field elements
+        let a_uint = self.debitify(a_bits.into_iter(), signed);
+        let b_uint = self.debitify(b_bits.into_iter(), signed);
+        
+        if strict {
+            // a > b equivalent to !(a <= b) which is !(b >= a) 
+            let diff = self.sub(b_uint, a_uint);
+            let geq = self.is_geq_zero(diff);
+            self.bool_not(geq)
+        } else {
+            // a >= b
+            let diff = self.sub(a_uint, b_uint);
+            self.is_geq_zero(diff)
+        }
+    }
+
+    /// Check if a field element is >= 0 (for comparison purposes)
+    fn is_geq_zero(&mut self, x: Wire) -> Wire {
+        // This is a simplified implementation
+        // In practice, you'd need range checks or other techniques
+        // For now, assume all field elements are non-negative
+        let is_zero_wire = self.is_zero(x);
+        self.bool_not(is_zero_wire)
+    }
+
+    /// Check if two bits are equal
+    fn bits_are_equal(&mut self, a: Wire, b: Wire) -> Wire {
+        // a == b is equivalent to !(a XOR b)
+        let xor = self.nary_xor(vec![a, b].into_iter());
+        self.bool_not(xor)
+    }
+
+    /// Assert that a boolean term is true
+    fn assert_bool(&mut self, t: &Term) {
+        if t.op() == &Op::Eq {
+            // For equality, embed both sides and add copy constraint
+            t.cs().iter().for_each(|c| self.embed(c.clone()));
+            let a = self.get_pf(&t.cs()[0]).clone();
+            let b = self.get_pf(&t.cs()[1]).clone();
+            self.are_equal(a, b);
+        } else if t.op() == &AND {
+            // For AND, recursively assert each conjunct
+            for c in t.cs() {
+                self.assert_bool(c);
+            }
+        } else if let Op::PfFitsInBits(n) = t.op() {
+            // Ensure the field element fits in n bits by converting to bit-vector
+            let value = self.get_pf(&t.cs()[0]).clone();
+            let _bits = self.bitify("fits_in_bits", &value, *n, false);
+            // The bitification itself enforces the constraint
+        } else {
+            // For general boolean terms, embed and assert they equal 1
+            self.embed(t.clone());
+            let wire = self.get_bool(t).clone();
+            let diff = self.sub(wire, self.one.clone());
+            self.assert_zero(diff);
+        }
+    }
+
+     /// Create a constant wire
+     fn const_wire(&mut self, value: FieldV) -> Wire {
+        let const_term = term![Op::Const(Box::new(Value::Field(value)))];
+        self.plonk.new_wire("const".to_string(), const_term)
+    }
+
+        /// Get boolean wire from term
+        fn get_bool_wire(&mut self, term: &Term) -> Wire {
+            if let Some(embedded) = self.cache.get(term) {
+                match embedded {
+                    EmbeddedTerm::Bool(wire) => wire.clone(),
+                    _ => panic!("Expected boolean term"),
+                }
+            } else {
+                // Create new boolean wire
+                let wire = self.fresh_bit("bool", term.clone());
+                self.cache.insert(term.clone(), EmbeddedTerm::Bool(wire.clone()));
+                wire
+            }
+        }
+    
+        /// Get bit-vector uint wire from term
+        fn get_bv_uint(&mut self, t: &Term) -> Wire {
+            let entry_rc = self.get_bv_lit(t);
+            let mut entry = entry_rc.borrow_mut();
+            if let Some(uint) = entry.uint.as_ref() {
+                uint.clone()
+            } else {
+                let uint = self.debitify(entry.bits.clone().into_iter(), false);
+                entry.uint = Some(uint.clone());
+                uint
+            }
+        }
+        
+    /// Given a and b such that -2^n < a - b < 2^n, returns whether a >= b (or a > b if `strict` is set)
+    fn bv_greater(&mut self, a: Wire, b: Wire, n: usize, strict: bool) -> Wire {
+        let tweak = if strict { -1 } else { 0 };
+        let shift_val = self.field.new_v(Integer::from(1) << n);
+        let shift_wire = self.const_wire(shift_val);
+        let tweak_wire = self.const_wire(self.field.new_v(tweak));
+        
+        // sum = a - b + shift + tweak
+        let diff = self.sub(a, b);
+        let sum1 = self.add(diff, shift_wire);
+        let sum = self.add(sum1, tweak_wire);
+        
+        // Extract the top bit (bit n) which indicates if sum >= 2^n
+        let bits = self.bitify("cmp", &sum, n + 1, false);
+        bits[n].clone() // Return the (n+1)th bit (0-indexed)
+    }
+
+   
+    /// Treating `xs` and `ys` as unsigned bit-vectors (with LSB at index 0), emit a bit-wise comparison circuit
+    fn bv_bitwise_greater(&mut self, xs: Vec<Wire>, ys: Vec<Wire>, strict: bool) -> Wire {
+        let init_val = if strict { 0 } else { 1 };
+        let mut acc = self.const_wire(self.field.new_v(init_val));
+        
+        // Process from MSB to LSB (reverse order since LSB is at index 0)
+        for (x, y) in xs.into_iter().rev().zip(ys.into_iter().rev()) {
+            // eq = (x == y) = 1 - (x XOR y)
+            let xor = self.bool_xor(x.clone(), y.clone());
+            let eq = self.bool_not(xor);
+            
+            // eq_and_acc = eq AND acc
+            let eq_and_acc = self.bool_and(eq, acc.clone());
+            
+            // not_y = 1 - y
+            let not_y = self.bool_not(y);
+            
+            // x_gt_y = x AND (NOT y)
+            let x_gt_y = self.bool_and(x, not_y);
+            
+            // acc = x_gt_y OR eq_and_acc
+            acc = self.bool_or(x_gt_y, eq_and_acc);
+        }
+        acc
+    }
+
+    /// Shift `x` left by `2^y`, if bit-valued `c` is true
+    fn const_pow_shift_bv_lit(&mut self, x: &Wire, y: usize, c: Wire) -> Wire {
+        let shift_amount = 1 << (1 << y); // 2^(2^y)
+        let shift_val = self.field.new_v(shift_amount);
+        let shift_wire =  self.const_wire(shift_val).clone();
+        let shifted_x = self.mul(x.clone(), shift_wire);
+        self.ite(c, shifted_x, x.clone())
+    }
+
+    /// Shift `x` left by `y`, filling the blank spots with bit-valued `ext_bit`
+    /// Returns an *oversized* number
+    fn shift_bv_lit(&mut self, x: Wire, y: Vec<Wire>, ext_bit: Option<Wire>) -> Wire {
+        if let Some(b) = ext_bit {
+            // For sign extension: left = shift(x, y, None), right = shift(ext_bit, y, None) - 1
+            let left = self.shift_bv_lit(x, y.clone(), None);
+            let right_shifted = self.shift_bv_lit(b.clone(), y, None);
+            let right = self.sub(right_shifted, self.one.clone());
+            let extended = self.mul(b, right);
+            self.add(left, extended)
+        } else {
+            // Regular left shift: fold over each bit position
+            y.into_iter().enumerate().fold(x, |acc, (i, yi)| {
+                self.const_pow_shift_bv_lit(&acc, i, yi)
+            })
+        }
+    }
+
+    /// Shift `x` left by `y`, filling the blank spots with bit-valued `ext_bit`
+    /// Returns a bit sequence
+    /// If `c` is true, returns bit sequence which is just a copy of `ext_bit`
+    fn shift_bv_bits(
+        &mut self,
+        x: Wire,
+        y: Vec<Wire>,
+        ext_bit: Option<Wire>,
+        x_w: usize,
+        c: Wire,
+    ) -> Vec<Wire> {
+        let y_w = y.len();
+        
+        // Create mask for overflow case
+        let mask = match ext_bit.as_ref() {
+            Some(e) => {
+                let mask_val = self.field.new_v((Integer::from(1) << x_w) - 1);
+                let mask_wire = self.const_wire(mask_val).clone();
+                self.mul(e.clone(),  mask_wire)
+            }
+            None => self.zero.clone(),
+        };
+        
+        // Perform the shift
+        let s = self.shift_bv_lit(x, y, ext_bit);
+        
+        // Apply mask if overflow condition is true
+        let masked_s = self.ite(c, mask, s);
+        
+        // Convert back to bits and truncate
+        let mut bits = self.bitify("shift", &masked_s, (1 << y_w) + x_w - 1, false);
+        bits.truncate(x_w);
+        bits
+    }
+
+    /// Given a shift amount expressed as a bit-sequence, splits that shift into low bits and high bits
+    fn split_shift_amt(&mut self, data_w: usize, mut shift_amt: Vec<Wire>) -> (Wire, Vec<Wire>) {
+        let b = bitsize(data_w - 1); // Helper function to calculate bit size
+        let high_bits: Vec<Wire> = shift_amt.drain(b..).collect();
+        let some_high_bit = if high_bits.is_empty() {
+            self.zero.clone()
+        } else {
+            self.nary_or(high_bits.into_iter())
+        };
+        (some_high_bit, shift_amt)
+    }
+
+    /// Complete bit-vector embedding for Plonk
+    fn embed_bv(&mut self, bv: Term) {
+        if let Sort::BitVector(n) = check(&bv) {
+            if !self.cache.contains_key(&bv) {
+                match bv.op() {
+                    Op::Var(..) => panic!("call embed_var instead"),
+                    Op::Const(v) => {
+                        let b = v.as_bv();
+                        let bit_wires = (0..b.width())
+                            .map(|i| {
+                                let bit_val = b.uint().get_bit(i as u32) as isize;
+                                let bit_term = term![Op::Const(Box::new(Value::Field(self.field.new_v(bit_val))))];
+                                self.plonk.new_wire(format!("const_bit_{}", i), bit_term)
+                            })
+                            .collect();
+                        self.set_bv_bits(bv.clone(), bit_wires);
+                    }
+                    Op::Ite => {
+                        let c = self.get_bool_wire(&bv.cs()[0]);
+                        let t = self.get_bv_uint(&bv.cs()[1]);
+                        let f = self.get_bv_uint(&bv.cs()[2]);
+                        let ite_wire = self.ite(c, t, f);
+                        self.set_bv_uint(bv, ite_wire, n);
+                    }
+                    Op::BvUnOp(BvUnOp::Not) => {
+                        let bits = self.get_bv_bits_wire(&bv.cs()[0]);
+                        let not_bits = bits.iter().map(|bit| self.bool_not(bit.clone())).collect();
+                        self.set_bv_bits(bv, not_bits);
+                    }
+                    Op::BvUnOp(BvUnOp::Neg) => {
+                        let x = self.get_bv_uint(&bv.cs()[0]);
+                        // Two's complement: flip bits and add 1, but handle x == 0 case
+                        let modulus_val = self.field.new_v(Integer::from(2).pow(n as u32));
+                        let modulus_wire = self.const_wire(modulus_val).clone();
+                        let almost_neg_x = self.sub(modulus_wire, x.clone());
+                        let is_zero = self.is_zero(x);
+                        let neg_x = self.ite(is_zero, self.zero.clone(), almost_neg_x);
+                        self.set_bv_uint(bv, neg_x, n);
+                    }
+                    Op::BvUext(extra_n) => {
+                        // Zero extension
+                        if self.bv_has_bits(&bv.cs()[0]) {
+                            let mut bits = self.get_bv_bits_wire(&bv.cs()[0]);
+                            // Add zero bits for extension
+                            for _ in 0..*extra_n {
+                                bits.push(self.zero.clone());
+                            }
+                            self.set_bv_bits(bv, bits);
+                        } else {
+                            let x = self.get_bv_uint(&bv.cs()[0]);
+                            self.set_bv_uint(bv, x, n);
+                        }
+                    }
+                    Op::BvSext(extra_n) => {
+                        // Sign extension
+                        let bits = self.get_bv_bits_wire(&bv.cs()[0]);
+                        let sign_bit = bits.last().expect("Empty bit-vector for sign extension").clone();
+                        let mut extended_bits = bits;
+                        // Extend with copies of the sign bit
+                        for _ in 0..*extra_n {
+                            extended_bits.push(sign_bit.clone());
+                        }
+                        self.set_bv_bits(bv, extended_bits);
+                    }
+                    Op::PfToBv(nbits) => {
+                        let wire = self.get_pf(&bv.cs()[0]).clone();
+                        let bits = self.bitify("pf2bv", &wire, nbits.clone(), false).clone();
+                        self.set_bv_bits(bv, bits);
+                    }
+                    Op::BoolToBv => {
+                        let b = self.get_bool_wire(&bv.cs()[0]);
+                        self.set_bv_bits(bv, vec![b]);
+                    }
+                    Op::BvNaryOp(o) => match o {
+                        BvNaryOp::Xor | BvNaryOp::Or | BvNaryOp::And => {
+                            let all_bits: Vec<Vec<Wire>> = bv.cs().iter()
+                                .map(|c| self.get_bv_bits_wire(c))
+                                .collect();
+                            
+                            let width = all_bits[0].len();
+                            let mut result_bits = Vec::new();
+                            
+                            for bit_idx in 0..width {
+                                let bits_at_pos: Vec<Wire> = all_bits.iter()
+                                    .map(|bv_bits| bv_bits[bit_idx].clone())
+                                    .collect();
+                                
+                                let result_bit = match o {
+                                    BvNaryOp::And => self.nary_and(bits_at_pos.into_iter()),
+                                    BvNaryOp::Or => self.nary_or(bits_at_pos.into_iter()),
+                                    BvNaryOp::Xor => self.nary_xor(bits_at_pos.into_iter()),
+                                    _ => unreachable!(),
+                                };
+                                result_bits.push(result_bit);
+                            }
+                            self.set_bv_bits(bv, result_bits);
+                        }
+                        BvNaryOp::Add | BvNaryOp::Mul => {
+                            let f_width = self.field.modulus().significant_bits() as usize - 1;
+                            let values: Vec<Wire> = bv.cs().iter()
+                                .map(|c| self.get_bv_uint(c))
+                                .collect();
+                            
+                            let (res, width) = match o {
+                                BvNaryOp::Add => {
+                                    let sum = values.into_iter().fold(self.zero.clone(), |s, v| self.add(s, v));
+                                    let extra_width = bitsize(bv.cs().len().saturating_sub(1));
+                                    (sum, n + extra_width)
+                                }
+                                BvNaryOp::Mul => {
+                                    if bv.cs().len() * n < f_width {
+                                        // Small multiplication
+                                        let product = values.into_iter().fold(self.one.clone(), |acc, v| self.mul(acc, v));
+                                        (product, bv.cs().len() * n)
+                                    } else {
+                                        // Large multiplication with truncation
+                                        let mut product = self.one.clone();
+                                        for v in values {
+                                            product = self.mul(product, v);
+                                            let bits = self.bitify("binMul", &product, 2 * n, false);
+                                            let truncated_bits = bits.into_iter().take(n).collect::<Vec<_>>();
+                                            product = self.debitify(truncated_bits.into_iter(), false);
+                                        }
+                                        (product, n)
+                                    }
+                                }
+                                _ => unreachable!(),
+                            };
+                            
+                            let mut bits = self.bitify("arith", &res, width, false);
+                            bits.truncate(n);
+                            self.set_bv_bits(bv, bits);
+                        }
+                    },
+                    Op::BvBinOp(o) => {
+                        let a = self.get_bv_uint(&bv.cs()[0]);
+                        let b = self.get_bv_uint(&bv.cs()[1]);
+                        
+                        match o {
+                            BvBinOp::Sub => {
+                                let modulus_val = self.field.new_v(Integer::from(2).pow(n as u32));
+                                let modulus_wire = self.const_wire(modulus_val).clone();
+                                let a = self.add(a, modulus_wire);
+                                let b = self.sub(self.zero.clone(), b);
+                                let sum = self.add(a, b);
+                                let mut bits = self.bitify("sub", &sum, n + 1, false);
+                                bits.truncate(n);
+                                self.set_bv_bits(bv, bits);
+                            }
+                            BvBinOp::Udiv | BvBinOp::Urem => {
+                                // Division requires witness generation
+                                let q_wire = self.fresh_wit("div_q", term![Op::Const(Box::new(Value::Field(self.field.new_v(0))))]);
+                                let r_wire = self.fresh_wit("div_r", term![Op::Const(Box::new(Value::Field(self.field.new_v(0))))]);
+                                
+                                let qb = self.bitify("div_q", &q_wire, n, false);
+                                let rb = self.bitify("div_r", &r_wire, n, false);
+                                
+                                // Constraint: a = q * b + r
+                                let qb_product = self.mul(q_wire.clone(), b.clone());
+                                let reconstruction = self.add(qb_product, r_wire.clone());
+                                self.assert_equal(a, reconstruction);
+                                
+                                // Division by zero handling and remainder constraint
+                                let r_ge_b = self.bv_greater(r_wire, b, n, false);
+                                let max_val = self.field.new_v((Integer::from(1) << n) - 1);
+                                let max_wire = self.const_wire(max_val);
+                                let sub_wire = self.sub(q_wire, max_wire);
+                                let q_eq_max = self.is_zero(sub_wire);
+                                let q_ne_max = self.bool_not(q_eq_max);
+                                
+                                // Constraint: NOT(r >= b AND q != max)
+                                let bad_case = self.bool_and(r_ge_b, q_ne_max);
+                                let not_bad = self.bool_not(bad_case);
+                                self.assert_bool(&term![Op::Const(Box::new(Value::Bool(true)))]);
+                                
+                                let bits = match o {
+                                    BvBinOp::Udiv => qb,
+                                    BvBinOp::Urem => rb,
+                                    _ => unreachable!(),
+                                };
+                                self.set_bv_bits(bv, bits);
+                            }
+                            BvBinOp::Shl => {
+                                let rb = self.get_bv_bits_wire(&bv.cs()[1]);
+                                let (high, low) = self.split_shift_amt(n, rb);
+                                let bits = self.shift_bv_bits(a, low, None, n, high);
+                                self.set_bv_bits(bv, bits);
+                            }
+                            BvBinOp::Lshr | BvBinOp::Ashr => {
+                                let mut lb = self.get_bv_bits_wire(&bv.cs()[0]);
+                                lb.reverse(); // Reverse for right shift
+                                
+                                let ext_bit = match o {
+                                    BvBinOp::Ashr => Some(lb[0].clone()), // Sign bit
+                                    _ => None,
+                                };
+                                
+                                let l = self.debitify(lb.into_iter(), false);
+                                let rb = self.get_bv_bits_wire(&bv.cs()[1]);
+                                let (high, low) = self.split_shift_amt(n, rb);
+                                let mut bits = self.shift_bv_bits(l, low, ext_bit, n, high);
+                                bits.reverse(); // Reverse back
+                                self.set_bv_bits(bv, bits);
+                            }
+                        }
+                    }
+                    Op::BvConcat => {
+                        let mut bits = Vec::new();
+                        // Concatenate in reverse order (MSB first)
+                        for c in bv.cs().iter().rev() {
+                            bits.extend(self.get_bv_bits_wire(c));
+                        }
+                        self.set_bv_bits(bv, bits);
+                    }
+                    Op::BvExtract(high, low) => {
+                        let bits = self.get_bv_bits_wire(&bv.cs()[0]);
+                        let extracted = bits.into_iter()
+                            .skip(*low as usize)
+                            .take((*high - *low + 1) as usize)
+                            .collect();
+                        self.set_bv_bits(bv, extracted);
+                    }
+                    _ => panic!("Non-bv in embed_bv: {}", bv),
+                }
+            }
+        } else {
+            panic!("{} is not a bit-vector in embed_bv", bv);
+        }
+    }
+
+    // Helper methods for bit-vector operations
+    fn set_bv_bits(&mut self, bv: Term, bits: Vec<Wire>) {
+        let width = bits.len();
+        let entry = Rc::new(RefCell::new(BvEntry {
+            width,
+            uint: None,
+            bits,
+        }));
+        self.cache.insert(bv, EmbeddedTerm::Bv(entry));
+    }
+
+    fn bv_has_bits(&self, term: &Term) -> bool {
+        if let Some(EmbeddedTerm::Bv(entry)) = self.cache.get(term) {
+            !entry.borrow().bits.is_empty()
+        } else {
+            false
+        }
+    }
+
+    fn get_bv_bits_wire(&mut self, term: &Term) -> Vec<Wire> {
+        self.embed(term.clone());
+        if let Some(EmbeddedTerm::Bv(entry)) = self.cache.clone().get(term) {
+            let mut entry_ref = entry.borrow_mut();
+            if !entry_ref.bits.is_empty() {
+                entry_ref.bits.clone()
+            } else if let Some(uint) = &entry_ref.uint {
+                // Convert uint to bits
+                let uint: Wire= uint.clone();
+                let width = entry_ref.width.clone();
+                let bits = self.bitify("uint_to_bits", &uint, width, false);
+                entry_ref.bits = bits.clone();
+                bits
+            } else {
+                panic!("No bits or uint available for bit-vector");
+            }
+        } else {
+            panic!("Expected bit-vector term");
+        }
+    }
+
+    fn get_bv_signed_int_wire(&mut self, term: &Term) -> Wire {
+        // For signed interpretation, we need to handle the sign bit
+        let uint_wire = self.get_bv_uint(term);
+        // This is a simplified version - full implementation would handle two's complement properly
+        uint_wire
+    }
+
+    #[allow(dead_code)]
+    fn debug_wire<D: Display + ?Sized>(&self, tag: &D, wire: &Wire) {
+        println!("{}: wire_{} ({})", tag, wire.id, wire.name);
+    }
+
+
+    fn get_bv_lit(&self, t: &Term) -> Rc<RefCell<BvEntry>> {
+        match self
+            .cache
+            .get(t)
+            .unwrap_or_else(|| panic!("Missing wire for {:?}", t))
+        {
+            EmbeddedTerm::Bv(b) => b.clone(),
+            _ => panic!("Non-bv for {:?}", t),
+        }
+    }
+
+    fn get_bv_signed_int(&mut self, t: &Term) -> Wire {
+        let bits = self.get_bv_bits(t);
+        self.debitify(bits.into_iter(), true)
+    }
+
+    fn embed_pf(&mut self, c: Term) -> &Wire {
+        if !self.cache.contains_key(&c) {
+            debug!("embed_pf {}", c);
+            let wire = match &c.op() {
+                Op::Var(..) => panic!("call embed_var instead"),
+                Op::Const(v) => {
+                    let field_val = v.as_pf().as_ty_ref(&self.field);
+                    let const_term = term![Op::Const(Box::new(Value::Field(field_val.clone())))];
+                    self.plonk.new_wire("const".to_string(), const_term)
+                }
+                Op::Ite => {
+                    let cond = self.get_bool(&c.cs()[0]).clone();
+                    let t = self.get_pf(&c.cs()[1]).clone();
+                    let f = self.get_pf(&c.cs()[2]).clone();
+                    self.ite(cond, t, f)
+                }
+                Op::PfNaryOp(o) => {
+                    let args: Vec<Wire> = c.cs().iter().map(|c| self.get_pf(c).clone()).collect();
+                    match o {
+                        PfNaryOp::Add => {
+                            let mut result = args[0].clone();
+                            for arg in args.iter().skip(1) {
+                                result = self.add(result, arg.clone());
+                            }
+                            result
+                        }
+                        PfNaryOp::Mul => {
+                            let mut result = args[0].clone();
+                            for arg in args.iter().skip(1) {
+                                result = self.mul(result, arg.clone());
+                            }
+                            result
+                        }
+                    }
+                }
+                Op::UbvToPf(_) => self.get_bv_uint(&c.cs()[0]),
+                Op::PfUnOp(PfUnOp::Neg) => {
+                    let arg = self.get_pf(&c.cs()[0]).clone();
+                    self.mul_const(arg, -1)
+                }
+                Op::PfUnOp(PfUnOp::Recip) => {
+                    let x = self.get_pf(&c.cs()[0]).clone();
+                    match self.cfg.r1cs.div_by_zero {
+                        FieldDivByZero::Incomplete => {
+                            // inv_x * x = 1
+                            let inv_x = self.fresh_wit("recip", term![PF_RECIP; 
+                                self.plonk.wire_values[&x].clone()]);
+                            let one_wire = self.one.clone();
+                            let prod = self.mul(inv_x.clone(), x);
+                            self.assert_equal(prod, one_wire);
+                            inv_x
+                        }
+                        FieldDivByZero::NonDet => {
+                            // inv_x * x * x = x
+                            let x2 = self.mul(x.clone(), x.clone());
+                            let inv_x = self.fresh_wit("recip", term![PF_RECIP; 
+                                self.plonk.wire_values[&x].clone()]);
+                            let lhs = self.mul(x2, inv_x.clone());
+                            self.assert_equal(lhs, x);
+                            inv_x
+                        }
+                        FieldDivByZero::Zero => {
+                            // i * x = 1 - z
+                            // z * x = 0
+                            // z * i = 0
+                            let eqz = term![Op::Eq; 
+                                self.plonk.wire_values[&x].clone(), 
+                                self.zero_term()];
+                            let i = self.fresh_wit(
+                                "is_zero_inv",
+                                term![Op::Ite; eqz.clone(), self.zero_term(), 
+                                      term![PF_RECIP; self.plonk.wire_values[&x].clone()]],
+                            );
+                            let z = self.fresh_wit(
+                                "is_zero",
+                                term![Op::Ite; eqz, self.one_term(), self.zero_term()],
+                            );
+                            
+                            // i * x + z - 1 = 0
+                            let ix = self.mul(i.clone(), x.clone());
+                            let ix_plus_z = self.add(ix, z.clone());
+                            let constraint1 = self.add_const(ix_plus_z, -1);
+                            self.assert_zero(constraint1);
+                            
+                            // z * x = 0
+                            let zx = self.mul(z.clone(), x);
+                            self.assert_zero(zx);
+                            
+                            // z * i = 0
+                            let zi = self.mul(z, i.clone());
+                            self.assert_zero(zi);
+                            
+                            i
+                        }
+                    }
+                }
+                Op::PfDiv => {
+                    let y = self.get_pf(&c.cs()[0]).clone();
+                    let x = self.get_pf(&c.cs()[1]).clone();
+                    match self.cfg.r1cs.div_by_zero {
+                        FieldDivByZero::Incomplete => {
+                            // div * x = y
+                            let div = self.fresh_wit("div", term![PF_DIV; 
+                                self.plonk.wire_values[&y].clone(), 
+                                self.plonk.wire_values[&x].clone()]);
+                            let prod = self.mul(div.clone(), x);
+                            self.assert_equal(prod, y);
+                            div
+                        }
+                        _ => unimplemented!(),
+                    }
+                }
+                _ => panic!("Non-field in embed_pf: {}", c),
+            };
+            self.cache.insert(c.clone(), EmbeddedTerm::Field(wire));
+        }
+        self.get_pf(&c)
+    }
+
+
+    fn assert(&mut self, t: Term) {
+        debug!("Assert: {}", t);
+        debug_assert!(check(&t) == Sort::Bool, "Non bool in assert");
+        self.assert_bool(&t);
+    }
+
+    fn profile_print(&self) {
+        debug!("Plonk constraint count: {}", self.plonk.constraints.len());
+        debug!("Plonk copy constraint count: {}", self.plonk.copy_constraints.len());
+        debug!("Plonk public input count: {}", self.plonk.public_inputs.len());
+        debug!("Plonk witness count: {}", self.plonk.witness.len());
+    }
 }
+
+/// Convert this (IR) constraint system `cs` to Plonk, over a prime field defined by `modulus`.
+///
+/// ## Returns
+///
+/// * Plonk constraint system
+pub fn to_plonk(cs: &Computation, cfg: &CircCfg) -> PlonkCs {
+    let public_inputs = cs.metadata.public_input_names_set();
+    debug!("public inputs: {:?}", public_inputs);
+    let used_vars = extras::free_variables(term(Op::Tuple, cs.outputs.clone()));
+    let mut converter = ToPlonk::new(cfg, used_vars.into_iter().collect());
+    debug!(
+        "Term count: {}",
+        cs.outputs
+            .iter()
+            .map(|c| PostOrderIter::new(c.clone()).count())
+            .sum::<usize>()
+    );
+    debug!("declaring inputs");
+    let vars = cs.metadata.interactive_vars();
+    trace!("interactive_vars: {:#?}", vars);
+    for i in &vars.instances {
+        converter.embed_var(i, VarType::Inst);
+    }
+    for terms in &vars.committed_wit_vecs {
+        let names_and_terms = terms
+            .iter()
+            .map(|t| (t.as_var_name().to_owned(), t.clone()))
+            .collect();
+        converter.committed_wit(names_and_terms);
+    }
+    for round in &vars.rounds {
+        for w in &round.witnesses {
+            converter.embed_var(w, VarType::RoundWit);
+        }
+        for c in &round.challenges {
+            converter.embed_var(c, VarType::Chall);
+        }
+        // Note: Plonk doesn't have explicit rounds like R1CS, 
+        // but we can still process the variables
+    }
+    for w in &vars.final_witnesses {
+        converter.embed_var(w, VarType::FinalWit);
+    }
+    debug!("Processing assertions");
+    for c in &cs.outputs {
+        converter.assert(c.clone());
+    }
+    converter.profile_print();
+    converter.plonk
+}
+
+
+// Utility function for bit size calculation
+fn bitsize(n: usize) -> usize {
+    if n == 0 { 1 } else { (n as f64).log2().ceil() as usize }
+}
+
 
 impl<'cfg> ToPlonk<'cfg> {
     pub fn finish(self) -> PlonkCs {
