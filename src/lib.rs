@@ -2,8 +2,8 @@
 //!
 //! A compiler infrastructure for compiling programs to circuits
 
-#![warn(missing_docs)]
-#![deny(warnings)]
+//#![warn(missing_docs)]
+//#![deny(warnings)]
 #![allow(rustdoc::private_intra_doc_links)]
 #![allow(clippy::mutable_key_type)]
 

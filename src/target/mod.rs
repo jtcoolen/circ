@@ -9,6 +9,9 @@ pub mod r1cs;
 #[cfg(feature = "smt")]
 pub mod smt;
 
+
+pub mod plonkish;
+
 /// Returns the number of bits needed to hold `n`.
 pub fn bitsize(mut n: usize) -> usize {
     let mut acc = 0;
