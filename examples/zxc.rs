@@ -697,6 +697,7 @@ pub struct PlonkToHyperPlonkMapper<F: PrimeField> {
     next_witness_index: usize,
     _marker: std::marker::PhantomData<F>,
     plonk_cs: PlonkCs,
+    memo: std::collections::HashMap<Term, F>,
 }
 
 impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
@@ -706,6 +707,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             next_witness_index: 0,
             _marker: std::marker::PhantomData,
             plonk_cs,
+            memo: std::collections::HashMap::new(),
         }
     }
 
@@ -866,18 +868,45 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
     }
 
     /// Create witness values matrix from PlonkCs
-    pub fn create_witness_values(&self) -> Result<Vec<F>, String> {
-        let num_constraints = self.plonk_cs.constraints.len();
-        let num_witnesses = self.next_witness_index;
+    pub fn create_witness_values(&mut self) -> Result<Vec<F>, String> {
+        let num_constraints = self.plonk_cs.constraints.clone().len();
+        let num_witnesses = self.next_witness_index.clone();
         let mut values = vec![F::zero(); num_witnesses * num_constraints];
 
         // Fill witness values
-        for (row_idx, constraint) in self.plonk_cs.constraints.iter().enumerate() {
+        for (row_idx, constraint) in self.plonk_cs.constraints.clone().into_iter().enumerate() {
             // Get wire indices
+
+            let t_a = self
+                .plonk_cs
+                .wire_values
+                .get(&constraint.a)
+                .ok_or("Wire a value not found")?;
+            let t_a = t_a.clone();
+            // Get values from wire_values map and convert Term to F
+            let a_val = self.term_to_f(&t_a)?;
+
+            let b_term = self
+                .plonk_cs
+                .wire_values
+                .get(&constraint.b)
+                .ok_or("Wire b value not found")?;
+            let b_term = b_term.clone();
+            let b_val = self.term_to_f(&b_term)?;
+
+            let c_term = self
+                .plonk_cs
+                .wire_values
+                .get(&constraint.c)
+                .ok_or("Wire c value not found")?;
+            let c_term = c_term.clone();
+            let c_val = self.term_to_f(&c_term)?;
+
             let a_idx = self
                 .wire_to_index
                 .get(&constraint.a)
                 .ok_or("Wire a not found")?;
+
             let b_idx = self
                 .wire_to_index
                 .get(&constraint.b)
@@ -886,27 +915,6 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                 .wire_to_index
                 .get(&constraint.c)
                 .ok_or("Wire c not found")?;
-
-            // Get values from wire_values map and convert Term to F
-            let a_val = self.term_to_f(
-                self.plonk_cs
-                    .wire_values
-                    .get(&constraint.a)
-                    .ok_or("Wire a value not found")?,
-            )?;
-            let b_val = self.term_to_f(
-                self.plonk_cs
-                    .wire_values
-                    .get(&constraint.b)
-                    .ok_or("Wire b value not found")?,
-            )?;
-            let c_val = self.term_to_f(
-                self.plonk_cs
-                    .wire_values
-                    .get(&constraint.c)
-                    .ok_or("Wire c value not found")?,
-            )?;
-
             // Store in column-major format
             values[a_idx * num_constraints + row_idx] = a_val;
             values[b_idx * num_constraints + row_idx] = b_val;
@@ -936,8 +944,14 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             .map_err(|e| format!("Failed to convert Integer to field: {:?}", e))
     }
 
-    fn term_to_f(&self, term: &Term) -> Result<F, String> {
-        match term.op() {
+    // Memoization map to store computed results
+
+    fn term_to_f(&mut self, term: &Term) -> Result<F, String> {
+        if let Some(cached_result) = self.memo.get(term) {
+            return Ok(*cached_result);
+        }
+
+        let result = match term.op() {
             // Direct field constant
             Op::Const(boxed_val) => {
                 match boxed_val.as_ref() {
@@ -966,7 +980,8 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                             .chars()
                             .all(|c| c.is_digit(10))
                 }) {
-                    Ok(self.term_to_f(&self.plonk_cs.wire_values[&assigned_value])?)
+                    let t = self.plonk_cs.wire_values[&assigned_value].clone();
+                    Ok(self.term_to_f(&t)?)
                 } else {
                     Err(format!("No assignment for variable: {}", var.name))
                 }
@@ -1614,7 +1629,13 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                 // Return some measure of the integer size - this is domain-specific
                 Ok(F::from(64u64)) // Assuming 64-bit integers
             }
+        };
+
+        if let Ok(value) = result {
+            self.memo.insert(term.clone(), value);
         }
+
+        result
     }
 
     /*fn term_to_f(&self, term: &Term) -> Result<F, String> {
