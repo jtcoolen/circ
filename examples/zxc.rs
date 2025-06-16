@@ -1,4 +1,4 @@
-use bls12_381::Bls12;
+use ark_secp256k1::Fr;
 /*
 use bellman::gadgets::test::TestConstraintSystem;
 use bellman::groth16::{
@@ -11,14 +11,17 @@ use bls12_381::{Bls12, Scalar};
 use circ::front::zsharp::{self, ZSharpFE};
 use circ::front::{FrontEnd, Mode};
 use circ::ir::opt::{opt, Opt};
-use circ::ir::term::{Term, Op};
+use circ::ir::term::{Op, Term};
+
+use rug::Integer;
+
 /*
 use circ::target::r1cs::bellman::parse_instance;
 */
+use circ::ir::term::*;
 use circ::target::plonkish::trans::{to_plonk, PlonkConstraint, PlonkCs};
 use circ::target::r1cs::opt::reduce_linearities;
 use circ::target::r1cs::trans::to_r1cs;
-use circ::ir::term::*;
 /*
 use std::fs::File;
 use std::io::Read;
@@ -29,6 +32,7 @@ use circ::cfg::{
     clap::{self, Parser, ValueEnum},
     CircOpt,
 };
+
 use std::path::PathBuf;
 
 use ark_ff::{BigInt, BigInteger, PrimeField};
@@ -692,32 +696,35 @@ pub struct PlonkToHyperPlonkMapper<F: PrimeField> {
     wire_to_index: HashMap<Wire, usize>,
     next_witness_index: usize,
     _marker: std::marker::PhantomData<F>,
+    plonk_cs: PlonkCs,
 }
 
 impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
-    pub fn new() -> Self {
+    pub fn new(plonk_cs: PlonkCs) -> Self {
         Self {
             wire_to_index: HashMap::new(),
             next_witness_index: 0,
             _marker: std::marker::PhantomData,
+            plonk_cs,
         }
     }
 
     /// Convert PlonkCs to PlonkishCircuit
-    pub fn convert(&mut self, plonk_cs: &PlonkCs) -> Result<PlonkishCircuit<F>, String> {
+    pub fn convert(&mut self) -> Result<PlonkishCircuit<F>, String> {
         // Step 1: Build wire index mapping
-        self.build_wire_mapping(plonk_cs)?;
+        let plonk_cs_clone = self.plonk_cs.clone();
+        self.build_wire_mapping(&plonk_cs_clone)?;
 
         // Step 2: Create selector columns from constraints
-        let selector_columns = self.create_selector_columns(plonk_cs)?;
+        let selector_columns = self.create_selector_columns(&self.plonk_cs)?;
 
         // Step 3: Create permutation vector from copy constraints
-        let permutation = self.create_permutation_vector(plonk_cs)?;
+        let permutation = self.create_permutation_vector(&self.plonk_cs)?;
 
         // Step 4: Create circuit parameters
         let params = PlonkishCircuitParams {
-            num_constraints: plonk_cs.constraints.len(),
-            num_pub_input: plonk_cs.public_inputs.len(),
+            num_constraints: self.plonk_cs.constraints.len(),
+            num_pub_input: self.plonk_cs.public_inputs.len(),
             gate_func: CustomizedGates::vanilla_plonk_gate(), // Standard Plonk gate
         };
 
@@ -846,8 +853,10 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
     fn field_v_to_f(&self, field_v: &FieldV) -> Result<F, String> {
         // This is a placeholder - you'll need to implement the actual conversion
         // based on how your FieldV type relates to the PrimeField F
-        F::from_bigint(F::BigInt::from_bits_be(field_v.i().to_digits(Order::LsfBe).as_slice()))
-            .ok_or_else(|| "Failed to convert FieldV to F".to_string())
+        F::from_bigint(F::BigInt::from_bits_be(
+            field_v.i().to_digits(Order::LsfBe).as_slice(),
+        ))
+        .ok_or_else(|| "Failed to convert FieldV to F".to_string())
         //todo!("Implement conversion from FieldV to F based on your type system")
     }
 
@@ -857,13 +866,13 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
     }
 
     /// Create witness values matrix from PlonkCs
-    pub fn create_witness_values(&self, plonk_cs: &PlonkCs) -> Result<Vec<F>, String> {
-        let num_constraints = plonk_cs.constraints.len();
+    pub fn create_witness_values(&self) -> Result<Vec<F>, String> {
+        let num_constraints = self.plonk_cs.constraints.len();
         let num_witnesses = self.next_witness_index;
         let mut values = vec![F::zero(); num_witnesses * num_constraints];
 
         // Fill witness values
-        for (row_idx, constraint) in plonk_cs.constraints.iter().enumerate() {
+        for (row_idx, constraint) in self.plonk_cs.constraints.iter().enumerate() {
             // Get wire indices
             let a_idx = self
                 .wire_to_index
@@ -880,19 +889,19 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
 
             // Get values from wire_values map and convert Term to F
             let a_val = self.term_to_f(
-                plonk_cs
+                self.plonk_cs
                     .wire_values
                     .get(&constraint.a)
                     .ok_or("Wire a value not found")?,
             )?;
             let b_val = self.term_to_f(
-                plonk_cs
+                self.plonk_cs
                     .wire_values
                     .get(&constraint.b)
                     .ok_or("Wire b value not found")?,
             )?;
             let c_val = self.term_to_f(
-                plonk_cs
+                self.plonk_cs
                     .wire_values
                     .get(&constraint.c)
                     .ok_or("Wire c value not found")?,
@@ -908,8 +917,701 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
     }
 
     /// Helper to convert Term to F (you'll need to implement this)
-      /// Convert a Term to field value F by evaluating it
-      fn term_to_f(&self, term: &Term) -> Result<F, String> {
+    /// Convert a Term to field value F by evaluating it
+
+    // Add witness_values field to your struct
+    // Helper function to convert field element to Integer
+    fn field_to_integer(&self, field_val: &F) -> Integer {
+        // Convert field element to bytes then to Integer
+        let mut bytes = Vec::new();
+        field_val.serialize_compressed(&mut bytes).unwrap();
+        Integer::from_digits(&bytes, rug::integer::Order::Lsf)
+    }
+
+    // Helper function to convert Integer to field element
+    fn integer_to_field(&self, int_val: &Integer) -> Result<F, String> {
+        // Convert Integer to bytes then to field element
+        let bytes = int_val.to_digits(rug::integer::Order::Lsf);
+        F::deserialize_compressed(&bytes[..])
+            .map_err(|e| format!("Failed to convert Integer to field: {:?}", e))
+    }
+
+    fn term_to_f(&self, term: &Term) -> Result<F, String> {
+        match term.op() {
+            // Direct field constant
+            Op::Const(boxed_val) => {
+                match boxed_val.as_ref() {
+                    Value::Field(field_val) => Ok(self.field_v_to_f(field_val)?),
+                    Value::Bool(b) => Ok(if *b { F::one() } else { F::zero() }),
+                    Value::Int(i) => {
+                        // Convert to Integer first, then to field
+                        let int_val = Integer::from(i.clone());
+                        self.integer_to_field(&int_val)
+                    }
+                    Value::BitVector(bv) => {
+                        // Convert bitvector to Integer then to field element
+                        let uint_val = Integer::from(bv.uint().clone());
+                        self.integer_to_field(&uint_val)
+                    }
+                    _ => Err(format!("Unsupported constant type: {:?}", boxed_val)),
+                }
+            }
+
+            // Variable lookup
+            Op::Var(var) => {
+                if let Some(assigned_value) = self.plonk_cs.witness.iter().find(|wire| wire.name == *var.name) {
+                    Ok(self.term_to_f(&self.plonk_cs.wire_values[&assigned_value])?)
+                } else {
+                    Err(format!("No assignment for variable: {}", var.name))
+                }
+                //todo!("Implement variable lookup for Term: {}", var.name)
+            }
+
+            // If-then-else
+            Op::Ite => {
+                let children = term.cs();
+                if children.len() != 3 {
+                    return Err("Ite expects 3 operands".to_string());
+                }
+                let condition = self.term_to_f(&children[0])?;
+                let then_val = self.term_to_f(&children[1])?;
+                let else_val = self.term_to_f(&children[2])?;
+
+                // If condition is non-zero, use then_val, else use else_val
+                Ok(if condition != F::zero() {
+                    then_val
+                } else {
+                    else_val
+                })
+            }
+
+            // Equality comparison
+            Op::Eq => {
+                let children = term.cs();
+                if children.len() != 2 {
+                    return Err("Eq expects 2 operands".to_string());
+                }
+                let left = self.term_to_f(&children[0])?;
+                let right = self.term_to_f(&children[1])?;
+                Ok(if left == right { F::one() } else { F::zero() })
+            }
+
+            // Bit-vector binary operators
+            Op::BvBinOp(bop) => {
+                let children = term.cs();
+                if children.len() != 2 {
+                    return Err(format!("{:?} expects 2 operands", bop));
+                }
+                let left = self.term_to_f(&children[0])?;
+                let right = self.term_to_f(&children[1])?;
+
+                // Convert to Integer for arbitrary precision operations
+                let left_int = self.field_to_integer(&left);
+                let right_int = self.field_to_integer(&right);
+
+                let result = match bop {
+                    BvBinOp::Sub => left_int - &right_int,
+                    BvBinOp::Udiv => {
+                        if right_int == 0 {
+                            return Err("Division by zero".to_string());
+                        }
+                        left_int / &right_int
+                    }
+                    BvBinOp::Urem => {
+                        if right_int == 0 {
+                            return Err("Modulo by zero".to_string());
+                        }
+                        left_int % &right_int
+                    }
+                    BvBinOp::Shl => {
+                        let shift_amount = right_int.to_u32().unwrap_or(0);
+                        left_int << shift_amount
+                    }
+                    BvBinOp::Lshr => {
+                        let shift_amount = right_int.to_u32().unwrap_or(0);
+                        left_int >> shift_amount
+                    }
+                    _ => return Err(format!("Unsupported BvBinOp: {:?}", bop)),
+                };
+                self.integer_to_field(&result)
+            }
+
+            // Bit-vector binary predicates
+            Op::BvBinPred(pred) => {
+                let children = term.cs();
+                if children.len() != 2 {
+                    return Err(format!("{:?} expects 2 operands", pred));
+                }
+                let left = self.term_to_f(&children[0])?;
+                let right = self.term_to_f(&children[1])?;
+
+                let left_int = self.field_to_integer(&left);
+                let right_int = self.field_to_integer(&right);
+
+                let result = match pred {
+                    BvBinPred::Ult => left_int < right_int,
+                    BvBinPred::Ule => left_int <= right_int,
+                    BvBinPred::Ugt => left_int > right_int,
+                    BvBinPred::Uge => left_int >= right_int,
+                    BvBinPred::Slt => {
+                        // For signed comparison, we need to handle the sign bit properly
+                        // This is a simplified version - you may need more sophisticated handling
+                        left_int.cmp(&right_int) == std::cmp::Ordering::Less
+                    }
+                    BvBinPred::Sle => left_int <= right_int,
+                    BvBinPred::Sgt => left_int > right_int,
+                    BvBinPred::Sge => left_int >= right_int,
+                    _ => return Err(format!("Unsupported BvBinPred: {:?}", pred)),
+                };
+                Ok(if result { F::one() } else { F::zero() })
+            }
+
+            // Bit-vector n-ary operators
+            Op::BvNaryOp(nop) => {
+                let children = term.cs();
+                match nop {
+                    BvNaryOp::Add => {
+                        let mut result = Integer::new();
+                        for child in children {
+                            let val = self.term_to_f(child)?;
+                            let val_int = self.field_to_integer(&val);
+                            result += val_int;
+                        }
+                        self.integer_to_field(&result)
+                    }
+                    BvNaryOp::Mul => {
+                        let mut result = Integer::from(1);
+                        for child in children {
+                            let val = self.term_to_f(child)?;
+                            let val_int = self.field_to_integer(&val);
+                            result *= val_int;
+                        }
+                        self.integer_to_field(&result)
+                    }
+                    BvNaryOp::Or => {
+                        let mut result = Integer::new();
+                        for child in children {
+                            let val = self.term_to_f(child)?;
+                            let val_int = self.field_to_integer(&val);
+                            result |= val_int;
+                        }
+                        self.integer_to_field(&result)
+                    }
+                    BvNaryOp::And => {
+                        let mut result = Integer::from(-1); // All bits set
+                        for child in children {
+                            let val = self.term_to_f(child)?;
+                            let val_int = self.field_to_integer(&val);
+                            result &= val_int;
+                        }
+                        self.integer_to_field(&result)
+                    }
+                    BvNaryOp::Xor => {
+                        let mut result = Integer::new();
+                        for child in children {
+                            let val = self.term_to_f(child)?;
+                            let val_int = self.field_to_integer(&val);
+                            result ^= val_int;
+                        }
+                        self.integer_to_field(&result)
+                    }
+                    _ => Err(format!("Unsupported BvNaryOp: {:?}", nop)),
+                }
+            }
+
+            // Bit-vector unary operators
+            Op::BvUnOp(uop) => {
+                let children = term.cs();
+                if children.len() != 1 {
+                    return Err(format!("{:?} expects 1 operand", uop));
+                }
+                let operand = self.term_to_f(&children[0])?;
+                let operand_int = self.field_to_integer(&operand);
+
+                let result = match uop {
+                    BvUnOp::Not => !operand_int,
+                    BvUnOp::Neg => -operand_int,
+                    _ => return Err(format!("Unsupported BvUnOp: {:?}", uop)),
+                };
+                self.integer_to_field(&result)
+            }
+
+            // Boolean to bit-vector conversion
+            Op::BoolToBv => {
+                let children = term.cs();
+                if children.len() != 1 {
+                    return Err("BoolToBv expects 1 operand".to_string());
+                }
+                let operand = self.term_to_f(&children[0])?;
+                Ok(if operand != F::zero() {
+                    F::one()
+                } else {
+                    F::zero()
+                })
+            }
+
+            // Bit extraction
+            Op::BvExtract(high, low) => {
+                let children = term.cs();
+                if children.len() != 1 {
+                    return Err("BvExtract expects 1 operand".to_string());
+                }
+                let operand = self.term_to_f(&children[0])?;
+                let operand_int = self.field_to_integer(&operand);
+
+                let width = high - low + 1;
+                let mask = (Integer::from(1) << width) - 1;
+                let extracted = (operand_int >> low) & mask;
+                self.integer_to_field(&extracted)
+            }
+
+            // Bit-vector concatenation
+            Op::BvConcat => {
+                let children = term.cs();
+                if children.is_empty() {
+                    return Err("BvConcat expects at least 1 operand".to_string());
+                }
+
+                let mut result = Integer::new();
+                let mut shift = 0u32;
+
+                // Process children from right to left (low-order to high-order)
+                for child in children.iter().rev() {
+                    let val = self.term_to_f(child)?;
+                    let val_int = self.field_to_integer(&val);
+                    result |= val_int << shift;
+                    // Assume each child contributes some number of bits (you may need to track this)
+                    shift += 8; // This is a simplification - you'd need actual bit widths
+                }
+                self.integer_to_field(&result)
+            }
+
+            // Zero extension
+            Op::BvUext(_bits) => {
+                let children = term.cs();
+                if children.len() != 1 {
+                    return Err("BvUext expects 1 operand".to_string());
+                }
+                // Zero extension is essentially a no-op for witness computation
+                self.term_to_f(&children[0])
+            }
+
+            // Sign extension
+            Op::BvSext(_bits) => {
+                let children = term.cs();
+                if children.len() != 1 {
+                    return Err("BvSext expects 1 operand".to_string());
+                }
+                let operand = self.term_to_f(&children[0])?;
+                // For simplicity, treat as no-op (proper sign extension would need bit width info)
+                Ok(operand)
+            }
+
+            // Prime field to bit-vector
+            Op::PfToBv(_width) => {
+                let children = term.cs();
+                if children.len() != 1 {
+                    return Err("PfToBv expects 1 operand".to_string());
+                }
+                // For witness computation, this is essentially a no-op
+                self.term_to_f(&children[0])
+            }
+
+            // Boolean implication
+            Op::Implies => {
+                let children = term.cs();
+                if children.len() != 2 {
+                    return Err("Implies expects 2 operands".to_string());
+                }
+                let left = self.term_to_f(&children[0])?;
+                let right = self.term_to_f(&children[1])?;
+
+                let result = (left == F::zero()) || (right != F::zero());
+                Ok(if result { F::one() } else { F::zero() })
+            }
+
+            // Boolean n-ary operations
+            Op::BoolNaryOp(nop) => {
+                let children = term.cs();
+                match nop {
+                    BoolNaryOp::And => {
+                        for child in children {
+                            let val = self.term_to_f(child)?;
+                            if val == F::zero() {
+                                return Ok(F::zero());
+                            }
+                        }
+                        Ok(F::one())
+                    }
+                    BoolNaryOp::Or => {
+                        for child in children {
+                            let val = self.term_to_f(child)?;
+                            if val != F::zero() {
+                                return Ok(F::one());
+                            }
+                        }
+                        Ok(F::zero())
+                    }
+                    BoolNaryOp::Xor => {
+                        let mut result = false;
+                        for child in children {
+                            let val = self.term_to_f(child)?;
+                            result ^= val != F::zero();
+                        }
+                        Ok(if result { F::one() } else { F::zero() })
+                    }
+                    _ => Err(format!("Unsupported BoolNaryOp: {:?}", nop)),
+                }
+            }
+
+            // Boolean not
+            Op::Not => {
+                let children = term.cs();
+                if children.len() != 1 {
+                    return Err("Not expects 1 operand".to_string());
+                }
+                let operand = self.term_to_f(&children[0])?;
+                Ok(if operand == F::zero() {
+                    F::one()
+                } else {
+                    F::zero()
+                })
+            }
+
+            // Get bit from bit-vector
+            Op::BvBit(bit_index) => {
+                let children = term.cs();
+                if children.len() != 1 {
+                    return Err("BvBit expects 1 operand".to_string());
+                }
+                let operand = self.term_to_f(&children[0])?;
+                let operand_int = self.field_to_integer(&operand);
+                let bit = (operand_int >> bit_index) & 1;
+                self.integer_to_field(&bit)
+            }
+
+            // Boolean majority
+            Op::BoolMaj => {
+                let children = term.cs();
+                if children.len() != 3 {
+                    return Err("BoolMaj expects 3 operands".to_string());
+                }
+                let a = self.term_to_f(&children[0])? != F::zero();
+                let b = self.term_to_f(&children[1])? != F::zero();
+                let c = self.term_to_f(&children[2])? != F::zero();
+
+                let result = (a && b) || (a && c) || (b && c);
+                Ok(if result { F::one() } else { F::zero() })
+            }
+
+            // Prime field unary operations
+            Op::PfUnOp(unop) => {
+                let children = term.cs();
+                if children.len() != 1 {
+                    return Err(format!("{:?} expects 1 operand", unop));
+                }
+                let operand = self.term_to_f(&children[0])?;
+
+                match unop {
+                    PfUnOp::Neg => Ok(-operand),
+                    PfUnOp::Recip => {
+                        if operand == F::zero() {
+                            Err("Division by zero in reciprocal".to_string())
+                        } else {
+                            Ok(operand.inverse().unwrap())
+                        }
+                    }
+                    _ => Err(format!("Unsupported PfUnOp: {:?}", unop)),
+                }
+            }
+
+            // Prime field n-ary operations
+            Op::PfNaryOp(nop) => {
+                let children = term.cs();
+                match nop {
+                    PfNaryOp::Add => {
+                        let mut result = F::zero();
+                        for child in children {
+                            result += self.term_to_f(child)?;
+                        }
+                        Ok(result)
+                    }
+                    PfNaryOp::Mul => {
+                        let mut result = F::one();
+                        for child in children {
+                            result *= self.term_to_f(child)?;
+                        }
+                        Ok(result)
+                    }
+                    _ => Err(format!("Unsupported PfNaryOp: {:?}", nop)),
+                }
+            }
+
+            // Unsigned bit-vector to prime field
+            Op::UbvToPf(_field) => {
+                let children = term.cs();
+                if children.len() != 1 {
+                    return Err("UbvToPf expects 1 operand".to_string());
+                }
+                // Convert and take modulus - for simplicity, just pass through
+                self.term_to_f(&children[0])
+            }
+
+            // Prime field challenge
+            Op::PfChallenge(challenge_op) => {
+                // In witness computation, this would typically be a predetermined value
+                // You'd need to have challenges pre-computed or use a deterministic method
+                /*if let Some(challenge_value) = self.challenges.get(&challenge_op.name) {
+                    Ok(*challenge_value)
+                } else {
+                    Err(format!("No challenge value for: {}", challenge_op.name))
+                }*/
+                todo!("Implement challenge lookup for challenge")
+            }
+
+            // Prime field fits in bits check
+            Op::PfFitsInBits(bits) => {
+                let children = term.cs();
+                if children.len() != 1 {
+                    return Err("PfFitsInBits expects 1 operand".to_string());
+                }
+                let operand = self.term_to_f(&children[0])?;
+
+                // Check if the field element fits in the specified number of bits
+                let max_val = (Integer::from(1) << bits) - 1;
+                let operand_int = self.field_to_integer(&operand);
+                Ok(if operand_int <= max_val {
+                    F::one()
+                } else {
+                    F::zero()
+                })
+            }
+
+            // Prime field division
+            Op::PfDiv => {
+                let children = term.cs();
+                if children.len() != 2 {
+                    return Err("PfDiv expects 2 operands".to_string());
+                }
+                let numerator = self.term_to_f(&children[0])?;
+                let denominator = self.term_to_f(&children[1])?;
+
+                if denominator == F::zero() {
+                    Err("Division by zero in PfDiv".to_string())
+                } else {
+                    Ok(numerator * denominator.inverse().unwrap())
+                }
+            }
+
+            // Witness value
+            Op::Witness(name) => {
+                /*if let Some(witness_value) = self.witness_values.get(name.as_ref()) {
+                    Ok(*witness_value)
+                } else {
+                    Err(format!("No witness value for: {}", name))
+                }*/
+                todo!("Implement witness value lookup for witness: {}", name)
+            }
+
+            // Integer operations
+            Op::IntBinPred(pred) => {
+                let children = term.cs();
+                if children.len() != 2 {
+                    return Err(format!("{:?} expects 2 operands", pred));
+                }
+                let left = self.term_to_f(&children[0])?;
+                let right = self.term_to_f(&children[1])?;
+
+                let left_int = self.field_to_integer(&left);
+                let right_int = self.field_to_integer(&right);
+
+                let result = match pred {
+                    IntBinPred::Lt => left_int < right_int,
+                    IntBinPred::Le => left_int <= right_int,
+                    IntBinPred::Gt => left_int > right_int,
+                    IntBinPred::Ge => left_int >= right_int,
+                    _ => return Err(format!("Unsupported IntBinPred: {:?}", pred)),
+                };
+                Ok(if result { F::one() } else { F::zero() })
+            }
+
+            Op::IntNaryOp(nop) => {
+                let children = term.cs();
+                match nop {
+                    IntNaryOp::Add => {
+                        let mut result = Integer::new();
+                        for child in children {
+                            let val = self.term_to_f(child)?;
+                            let val_int = self.field_to_integer(&val);
+                            result += val_int;
+                        }
+                        self.integer_to_field(&result)
+                    }
+                    IntNaryOp::Mul => {
+                        let mut result = Integer::from(1);
+                        for child in children {
+                            let val = self.term_to_f(child)?;
+                            let val_int = self.field_to_integer(&val);
+                            result *= val_int;
+                        }
+                        self.integer_to_field(&result)
+                    }
+                    _ => Err(format!("Unsupported IntNaryOp: {:?}", nop)),
+                }
+            }
+
+            Op::IntBinOp(iop) => {
+                let children = term.cs();
+                if children.len() != 2 {
+                    return Err(format!("{:?} expects 2 operands", iop));
+                }
+                let left = self.term_to_f(&children[0])?;
+                let right = self.term_to_f(&children[1])?;
+
+                let left_int = self.field_to_integer(&left);
+                let right_int = self.field_to_integer(&right);
+
+                let result = match iop {
+                    IntBinOp::Sub => left_int - &right_int,
+                    IntBinOp::Div => {
+                        if right_int == 0 {
+                            return Err("Division by zero".to_string());
+                        }
+                        left_int / &right_int
+                    }
+                    IntBinOp::Rem => {
+                        if right_int == 0 {
+                            return Err("Modulo by zero".to_string());
+                        }
+                        left_int % &right_int
+                    }
+                    IntBinOp::ModInv => {
+                        if right_int == 0 {
+                            return Err("Division by zero in ModInv".to_string());
+                        }
+                        // Compute modular inverse using Extended Euclidean algorithm
+                        let gcd = left_int.clone().gcd(&right_int);
+                        if gcd != 1 {
+                            return Err("No modular inverse exists".to_string());
+                        }
+                        left_int.invert(&right_int).unwrap()
+                        // Should not happen due to gcd check
+                    }
+                    _ => return Err(format!("Unsupported IntBinOp: {:?}", iop)),
+                };
+                self.integer_to_field(&result)
+            }
+
+            Op::IntUnOp(uop) => {
+                let children = term.cs();
+                if children.len() != 1 {
+                    return Err(format!("{:?} expects 1 operand", uop));
+                }
+                let operand = self.term_to_f(&children[0])?;
+                let operand_int = self.field_to_integer(&operand);
+
+                let result = match uop {
+                    IntUnOp::Neg => -operand_int,
+                    // Note: IntUnOp::Abs doesn't exist, removed it
+                    _ => return Err(format!("Unsupported IntUnOp: {:?}", uop)),
+                };
+                self.integer_to_field(&result)
+            }
+
+            // Integer to bit-vector conversion
+            Op::IntToBv(width) => {
+                let children = term.cs();
+                if children.len() != 1 {
+                    return Err("IntToBv expects 1 operand".to_string());
+                }
+                let operand = self.term_to_f(&children[0])?;
+                let operand_int = self.field_to_integer(&operand);
+                // Mask to the specified width
+                let mask = (Integer::from(1) << width) - 1;
+                let result = operand_int & mask;
+                self.integer_to_field(&result)
+            }
+
+            // Integer to prime field
+            Op::IntToPf(_field) => {
+                let children = term.cs();
+                if children.len() != 1 {
+                    return Err("IntToPf expects 1 operand".to_string());
+                }
+                // Direct conversion
+                self.term_to_f(&children[0])
+            }
+
+            // Prime field to integer
+            Op::PfToInt => {
+                let children = term.cs();
+                if children.len() != 1 {
+                    return Err("PfToInt expects 1 operand".to_string());
+                }
+                // Direct conversion
+                self.term_to_f(&children[0])
+            }
+
+            // Prime field to boolean (trusted)
+            Op::PfToBoolTrusted => {
+                let children = term.cs();
+                if children.len() != 1 {
+                    return Err("PfToBoolTrusted expects 1 operand".to_string());
+                }
+                let operand = self.term_to_f(&children[0])?;
+                // Assume the field element is 0 or 1
+                Ok(operand)
+            }
+
+            // Floating point operations (simplified - you may need proper IEEE 754 handling)
+            Op::FpBinOp(_)
+            | Op::FpBinPred(_)
+            | Op::FpUnPred(_)
+            | Op::FpUnOp(_)
+            | Op::BvToFp
+            | Op::UbvToFp(_)
+            | Op::SbvToFp(_)
+            | Op::FpToFp(_) => {
+                Err("Floating point operations not implemented in witness computation".to_string())
+            }
+
+            // Array operations (simplified)
+            Op::Select | Op::Store | Op::CStore | Op::Fill(_) | Op::Array(_) => {
+                Err("Array operations not implemented in witness computation".to_string())
+            }
+
+            // Tuple operations
+            Op::Tuple | Op::Field(_) | Op::Update(_) => {
+                Err("Tuple operations not implemented in witness computation".to_string())
+            }
+
+            // Map operation
+            Op::Map(_) => Err("Map operation not implemented in witness computation".to_string()),
+
+            // Function calls
+            Op::Call(_) => Err("Function calls not implemented in witness computation".to_string()),
+
+            // Array rotation
+            Op::Rot(_) => Err("Array rotation not implemented in witness computation".to_string()),
+
+            // Extension operations
+            Op::ExtOp(_) => {
+                Err("Extension operations not supported in witness computation".to_string())
+            }
+
+            // Integer size
+            Op::IntSize => {
+                let children = term.cs();
+                if children.len() != 1 {
+                    return Err("IntSize expects 1 operand".to_string());
+                }
+                // Return some measure of the integer size - this is domain-specific
+                Ok(F::from(64u64)) // Assuming 64-bit integers
+            }
+        }
+    }
+
+    /*fn term_to_f(&self, term: &Term) -> Result<F, String> {
         match term.op() {
             // Direct field constant
             Op::Const(boxed_val) => {
@@ -928,7 +1630,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                     _ => Err(format!("Unsupported constant type: {:?}", boxed_val))
                 }
             }
-            
+
             // Variable lookup - need to evaluate recursively or from assignment
             Op::Var(var) => {
                 // If you have variable assignments stored somewhere
@@ -939,7 +1641,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                 }*/
                 todo!("unimplemented")
             }
-            
+
             // Arithmetic operations - evaluate recursively
             &PF_ADD => {
                 let children = term.cs();
@@ -950,7 +1652,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                 let right = self.term_to_f(&children[1])?;
                 Ok(left + right)
             }
-            
+
             &PF_MUL => {
                 let children = term.cs();
                 if children.len() != 2 {
@@ -960,7 +1662,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                 let right = self.term_to_f(&children[1])?;
                 Ok(left * right)
             }
-            
+
             Op::PfUnOp(PfUnOp::Neg) => {
                 let children = term.cs();
                 if children.len() != 1 {
@@ -969,7 +1671,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                 let operand = self.term_to_f(&children[0])?;
                 Ok(-operand)
             }
-            
+
             Op::Ite => {
                 let children = term.cs();
                 if children.len() != 3 {
@@ -978,29 +1680,58 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                 let condition = self.term_to_f(&children[0])?;
                 let then_val = self.term_to_f(&children[1])?;
                 let else_val = self.term_to_f(&children[2])?;
-                
+
                 // If condition is non-zero, use then_val, else use else_val
                 Ok(if condition != F::zero() { then_val } else { else_val })
             }
-            
+
             _ => Err(format!("Unsupported term operation: {:?}", term.op()))
         }
-    }
-    
+    }*/
 }
 
 /// Helper function to create a complete HyperPlonk circuit from PlonkCs
 pub fn plonk_to_hyperplonk<F: PrimeField>(
-    plonk_cs: &PlonkCs,
+    plonk_cs: PlonkCs,
 ) -> Result<(PlonkishCircuit<F>, Vec<F>), String> {
-    let mut mapper = PlonkToHyperPlonkMapper::new();
-    let circuit = mapper.convert(plonk_cs)?;
-    let witness_values = mapper.create_witness_values(plonk_cs)?;
+    let mut mapper = PlonkToHyperPlonkMapper::new(plonk_cs);
+    let circuit = mapper.convert()?;
+    let witness_values = mapper.create_witness_values()?;
 
     Ok((circuit, witness_values))
 }
 
+fn convert_selectors(
+    selectors: Vec<SelectorColumn<Fr>>,
+) -> Vec<hyperplonk::selectors::SelectorColumn<Fr>> {
+    use ark_std::Zero;
+    selectors
+        .into_iter()
+        .map(|mut s| {
+            // Calculate the next power of two
+            let next_power_of_two = s.0.len().next_power_of_two();
 
+            // Pad with zeros if necessary
+            if s.0.len() < next_power_of_two {
+                s.0.resize(next_power_of_two, Fr::zero());
+            }
+
+            hyperplonk::selectors::SelectorColumn(s.0)
+        })
+        .collect()
+}
+
+fn convert_gates(gates: CustomizedGates) -> hyperplonk::custom_gate::CustomizedGates {
+    hyperplonk::custom_gate::CustomizedGates { gates: gates.gates }
+}
+
+fn convert_params(params: PlonkishCircuitParams) -> hyperplonk::structs::HyperPlonkParams {
+    hyperplonk::structs::HyperPlonkParams {
+        num_constraints: params.num_constraints,
+        num_pub_input: params.num_pub_input,
+        gate_func: convert_gates(params.gate_func),
+    }
+}
 
 //=======
 
@@ -1126,7 +1857,8 @@ fn main() {
     println!("{:?}", plonk.copy_constraints.len());
     println!("{:?}", plonk.wire_values.len());
     use ark_bls12_381::Fr;
-    let _res = plonk_to_hyperplonk::<Fr>(&plonk);
+    let (circuit, witnesses) = plonk_to_hyperplonk::<Fr>(plonk).unwrap();
+    assert!(circuit.is_satisfied(&witnesses));
     // implement optimizer
     match action {
         ProofAction::Count => {

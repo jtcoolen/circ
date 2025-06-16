@@ -54,6 +54,7 @@ pub struct CopyConstraint {
 }
 
 /// Plonk constraint system
+#[derive(Clone, Debug)]
 pub struct PlonkCs {
     pub field: FieldT,
     pub constraints: Vec<PlonkConstraint>,
@@ -157,8 +158,6 @@ impl<'cfg> ToPlonk<'cfg> {
             cfg,
         }
     }
-
-
 
     /// Create a committed witness vector. Each input is a (name, term) pair.
     fn committed_wit(&mut self, elements: Vec<(String, Term)>) {
