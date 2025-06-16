@@ -978,9 +978,11 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                         && wire.name[var.name.len()..].starts_with("_n")
                         && wire.name[var.name.len() + 2..]
                             .chars()
-                            .all(|c| c.is_digit(10))
+                            .filter(|c| c.is_digit(10))
+                            .count() >= 1
                 }) {
                     let t = self.plonk_cs.wire_values[&assigned_value].clone();
+                    println!("var name {}, {:?}", var.name, t);
                     Ok(self.term_to_f(&t)?)
                 } else {
                     Err(format!("No assignment for variable: {}", var.name))

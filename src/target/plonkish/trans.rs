@@ -861,9 +861,10 @@ impl<'cfg> ToPlonk<'cfg> {
     }
 
     fn get_pf(&self, term: &Term) -> &Wire {
-        match self.cache.get(term) {
-            Some(EmbeddedTerm::Field(wire)) => wire,
-            _ => panic!("No field wire for term: {}", term),
+        match self.cache.get(term).unwrap_or_else(|| panic!("Missing wire for {:?}", term))
+        {
+            EmbeddedTerm::Field(wire) => wire,
+            _ => panic!("Non-field for {:?}", term),
         }
     }
 
@@ -944,9 +945,9 @@ impl<'cfg> ToPlonk<'cfg> {
         if t.op() == &Op::Eq {
             // For equality, embed both sides and add copy constraint
             t.cs().iter().for_each(|c| self.embed(c.clone()));
-            let a = self.get_pf(&t.cs()[0]).clone();
-            let b = self.get_pf(&t.cs()[1]).clone();
-            self.are_equal(a, b);
+            let a = (&t.cs()[0]).clone();
+            let b = (&t.cs()[1]).clone();
+            self.assert_eq(&a, &b);
         } else if t.op() == &AND {
             // For AND, recursively assert each conjunct
             for c in t.cs() {
@@ -954,8 +955,9 @@ impl<'cfg> ToPlonk<'cfg> {
             }
         } else if let Op::PfFitsInBits(n) = t.op() {
             // Ensure the field element fits in n bits by converting to bit-vector
-            let value = self.get_pf(&t.cs()[0]).clone();
-            let _bits = self.bitify("fits_in_bits", &value, *n, false);
+            //let value = self.get_pf(&t.cs()[0]).clone();
+            //let _bits = self.bitify("fits_in_bits", &value, *n, false);
+            self.embed(term![Op::PfToBv(*n); t.cs()[0].clone()]);
             // The bitification itself enforces the constraint
         } else {
             // For general boolean terms, embed and assert they equal 1
@@ -1627,7 +1629,7 @@ pub fn to_plonk(cs: &Computation, cfg: &CircCfg) -> PlonkCs {
     }
     debug!("Processing assertions");
     for c in &cs.outputs {
-        //converter.assert(c.clone()); // TODO restore
+        converter.assert(c.clone()); // TODO restore
     }
     converter.profile_print();
     converter.plonk

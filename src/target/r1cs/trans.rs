@@ -1135,7 +1135,7 @@ pub fn to_r1cs(cs: &Computation, cfg: &CircCfg) -> R1cs {
     );
     debug!("declaring inputs");
     let vars = cs.metadata.interactive_vars();
-    trace!("interactive_vars: {:#?}", vars);
+    println!("interactive_vars: {:#?}", vars);
     for i in &vars.instances {
         converter.embed_var(i, VarType::Inst);
     }
@@ -1144,6 +1144,7 @@ pub fn to_r1cs(cs: &Computation, cfg: &CircCfg) -> R1cs {
             .iter()
             .map(|t| (t.as_var_name().to_owned(), t.clone()))
             .collect();
+        println!("names_and_terms {:?}", names_and_terms);
         converter.committed_wit(names_and_terms);
     }
     for round in &vars.rounds {
@@ -1163,6 +1164,7 @@ pub fn to_r1cs(cs: &Computation, cfg: &CircCfg) -> R1cs {
         converter.assert(c.clone());
     }
     converter.profile_print();
+    println!("r1cs: {:?}", converter.r1cs);
     converter.r1cs
 }
 
