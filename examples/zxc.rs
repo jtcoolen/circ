@@ -959,7 +959,13 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
 
             // Variable lookup
             Op::Var(var) => {
-                if let Some(assigned_value) = self.plonk_cs.witness.iter().find(|wire| wire.name == *var.name) {
+                if let Some(assigned_value) = self.plonk_cs.witness.iter().find(|wire| {
+                    wire.name.starts_with(&*var.name)
+                        && wire.name[var.name.len()..].starts_with("_n")
+                        && wire.name[var.name.len() + 2..]
+                            .chars()
+                            .all(|c| c.is_digit(10))
+                }) {
                     Ok(self.term_to_f(&self.plonk_cs.wire_values[&assigned_value])?)
                 } else {
                     Err(format!("No assignment for variable: {}", var.name))

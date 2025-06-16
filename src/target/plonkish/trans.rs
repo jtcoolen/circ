@@ -177,6 +177,7 @@ impl<'cfg> ToPlonk<'cfg> {
         } else {
             format!("{ctx}_n{}", self.next_idx)
         };
+        println!("name {}", n);
         self.next_idx += 1;
         debug_assert!(matches!(check(&comp), Sort::Field(_)));
         let wire = self.plonk.new_wire(n.clone(), comp);
