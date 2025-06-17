@@ -976,7 +976,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             let q_m = self.field_v_to_f(&constraint.q_m)?;
             let q_c = self.field_v_to_f(&constraint.q_c)?;
 
-            println!("q_o = {:?}", q_o.to_string());
+            println!("row idx {} , q_o = {:?}, {}", row_idx, q_o, q_o.to_string());
             let constraint_value = q_l * a_val
             + q_r * b_val
             + q_o * c_val
@@ -1000,8 +1000,8 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                     q_m * a_val * b_val,
                     q_c
                 );
-                println!("row index {} out of {}", row_idx, self.plonk_cs.constraints.len());
-                //return Err(format!("Constraint not satisfied at row {}", row_idx));
+                println!("row index {} out of {} = {}", row_idx, self.plonk_cs.constraints.len(), constraint_value);
+                return Err(format!("Constraint not satisfied at row {}", row_idx));
             }
 
             // Store in column-major format

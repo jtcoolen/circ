@@ -270,7 +270,7 @@ impl<'cfg> ToPlonk<'cfg> {
         self.constraint(
             1,
             1,
-            1,
+            -1,
             0,
             0, // q_l=1, q_r=1, q_o=-1, q_m=0, q_c=0
             a,
