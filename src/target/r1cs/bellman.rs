@@ -86,7 +86,7 @@ impl<F: PrimeField> Circuit<F> for SynthInput<'_> {
             self.0.r1cs.field,
             f_mod
         );
-        let mut vars = HashMap::with_capacity(self.0.r1cs.vars.len());
+        let mut vars: HashMap<Var, Variable> = HashMap::with_capacity(self.0.r1cs.vars.len());
         let values: Option<Vec<_>> = self.1.map(|values| {
             let mut evaluator = StagedWitCompEvaluator::new(&self.0.precompute);
             let mut ffs = Vec::new();

@@ -36,7 +36,7 @@ impl PreComp {
     pub fn sequence(&self) -> &[(String, Sort)] {
         &self.sequence
     }
-    /// immutable access to the outputs
+    /// immutable access to the inputs
     pub fn inputs(&self) -> &FxHashSet<(String, Sort)> {
         &self.inputs
     }

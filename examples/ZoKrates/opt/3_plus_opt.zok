@@ -1,2 +1,2 @@
-def main(private u8 x) -> u8:
-    return x + x + x
+def main(private field x) -> field:
+    return x+1

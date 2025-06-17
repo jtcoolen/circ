@@ -12,7 +12,9 @@ use circ::front::zsharp::{self, ZSharpFE};
 use circ::front::{FrontEnd, Mode};
 use circ::ir::opt::{opt, Opt};
 use circ::ir::term::{Op, Term};
-
+use circ_fields::FullFieldV::FBls12381;
+use circ::target::r1cs::wit_comp;
+use fxhash::FxHashMap;
 use rug::Integer;
 
 /*
@@ -37,7 +39,7 @@ use std::path::PathBuf;
 
 use ark_ff::{BigInt, BigInteger, PrimeField};
 use circ::target::plonkish::trans::Wire;
-use circ_fields::FieldV;
+use circ_fields::{FieldT, FieldV};
 use hyperplonk::structs::HyperPlonkParams;
 use rug::integer::Order;
 use std::collections::HashMap;
@@ -666,6 +668,9 @@ impl<F: PrimeField> PlonkishCircuit<F> {
     }
 
     pub fn is_satisfied(&self, values: &[F]) -> bool {
+        println!("values = {:?}", values);
+        println!("selectors = {:?}", self.selectors);
+
         let gate_constraint = (0..self.params.num_constraints).into_par_iter().all(|i| {
             self.params
                 .gate_func
@@ -675,6 +680,7 @@ impl<F: PrimeField> PlonkishCircuit<F> {
         if !gate_constraint {
             return false;
         }
+    
 
         let wiring_constraint = (0..self.permutation.len()).into_par_iter().all(|i| {
             let next_idx_val = self.permutation[i].into_bigint();
@@ -698,16 +704,57 @@ pub struct PlonkToHyperPlonkMapper<F: PrimeField> {
     _marker: std::marker::PhantomData<F>,
     plonk_cs: PlonkCs,
     memo: std::collections::HashMap<Term, F>,
+    var_vals: FxHashMap<String, F>,
+    terms: FxHashMap<Var, Term>,
+    precompute: precomp::PreComp,
+    inputs: FxHashMap<String, Value>,
 }
 
 impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
     pub fn new(plonk_cs: PlonkCs) -> Self {
+        let wire_values = plonk_cs.wire_values.clone();
+        // extract terms: HashMap<Var, Term> from wire_values
+        let terms = wire_values
+            .iter()
+            .filter_map(|(_, term)| {
+            if let Op::Var(var) = term.op() {
+                println!("var {:?} = {:?}", var.name, term);
+                Some((var.as_ref().clone(), term.clone()))
+            } else {
+                None
+            }
+            })
+            .collect::<FxHashMap<_, _>>();
+        println!("public inputs = {:?}", plonk_cs.public_inputs);
+        println!("wits = {:?}", plonk_cs.witness);
+        let mut rng = rand::thread_rng();
+        let input_names = plonk_cs.all_inputs.clone();
+        let mut inputs = FxHashMap::<String, Value>::default();
+        // add (x, 1) and (return, 3) to inputs
+        inputs.insert(
+            "x".to_string(),
+            Value::Field(FieldV::new_ty(1i64, FieldT::FBls12381)),
+        );
+        inputs.insert(
+            "return".to_string(),
+            Value::Field(FieldV::new_ty(2i64, FieldT::FBls12381)),
+        );
+        // Map input_names to random Value in the inputs FxHashMap<String, Value>
+        /*for input_name in input_names {
+            
+            let random_value = Value::Field(FieldV::random(FieldT::FBls12381, &mut rng));
+            inputs.insert(input_name, random_value);
+        }*/
         Self {
             wire_to_index: HashMap::new(),
             next_witness_index: 0,
             _marker: std::marker::PhantomData,
             plonk_cs,
             memo: std::collections::HashMap::new(),
+            var_vals: FxHashMap::default(),
+            terms,
+            precompute: precomp::PreComp::new(),
+            inputs,
         }
     }
 
@@ -856,7 +903,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         // This is a placeholder - you'll need to implement the actual conversion
         // based on how your FieldV type relates to the PrimeField F
         F::from_bigint(F::BigInt::from_bits_be(
-            field_v.i().to_digits(Order::LsfBe).as_slice(),
+            field_v.i().to_digits(Order::MsfBe).as_slice(),
         ))
         .ok_or_else(|| "Failed to convert FieldV to F".to_string())
         //todo!("Implement conversion from FieldV to F based on your type system")
@@ -873,54 +920,96 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         let num_witnesses = self.next_witness_index.clone();
         let mut values = vec![F::zero(); num_witnesses * num_constraints];
 
+        let vars: HashMap<Var, FieldV> = self.eval_all_vars(&self.inputs);
+        for (var, field_v) in vars {
+            let field_f = self.field_v_to_f(&field_v)?;
+            self.var_vals.insert(var.name.to_string(), field_f);
+        }
+
         // Fill witness values
         for (row_idx, constraint) in self.plonk_cs.constraints.clone().into_iter().enumerate() {
-            // Get wire indices
-
-            let t_a = self
-                .plonk_cs
-                .wire_values
-                .get(&constraint.a)
-                .ok_or("Wire a value not found")?;
-            let t_a = t_a.clone();
+            let a_term = self
+            .plonk_cs
+            .wire_values
+            .get(&constraint.a)
+            .ok_or("Wire a value not found")?;
+            let a_term = a_term.clone();
             // Get values from wire_values map and convert Term to F
-            let a_val = self.term_to_f(&t_a)?;
+            let a_val = self.term_to_f(&a_term)?;
 
             let b_term = self
-                .plonk_cs
-                .wire_values
-                .get(&constraint.b)
-                .ok_or("Wire b value not found")?;
+            .plonk_cs
+            .wire_values
+            .get(&constraint.b)
+            .ok_or("Wire b value not found")?;
             let b_term = b_term.clone();
             let b_val = self.term_to_f(&b_term)?;
 
             let c_term = self
-                .plonk_cs
-                .wire_values
-                .get(&constraint.c)
-                .ok_or("Wire c value not found")?;
+            .plonk_cs
+            .wire_values
+            .get(&constraint.c)
+            .ok_or("Wire c value not found")?;
             let c_term = c_term.clone();
             let c_val = self.term_to_f(&c_term)?;
 
             let a_idx = self
-                .wire_to_index
-                .get(&constraint.a)
-                .ok_or("Wire a not found")?;
+            .wire_to_index
+            .get(&constraint.a)
+            .ok_or("Wire a not found")?;
 
             let b_idx = self
-                .wire_to_index
-                .get(&constraint.b)
-                .ok_or("Wire b not found")?;
+            .wire_to_index
+            .get(&constraint.b)
+            .ok_or("Wire b not found")?;
+
             let c_idx = self
-                .wire_to_index
-                .get(&constraint.c)
-                .ok_or("Wire c not found")?;
+            .wire_to_index
+            .get(&constraint.c)
+            .ok_or("Wire c not found")?;
+
+  
+            // Check constraint holds
+            let q_l = self.field_v_to_f(&constraint.q_l)?;
+            let q_r = self.field_v_to_f(&constraint.q_r)?;
+            let q_o = self.field_v_to_f(&constraint.q_o)?;
+            let q_m = self.field_v_to_f(&constraint.q_m)?;
+            let q_c = self.field_v_to_f(&constraint.q_c)?;
+
+            println!("q_o = {:?}", q_o.to_string());
+            let constraint_value = q_l * a_val
+            + q_r * b_val
+            + q_o * c_val
+            + q_m * a_val * b_val
+            + q_c;
+
+            if constraint_value != F::zero() {
+                println!(
+                    "Selector values: q_l = {:?}, q_r = {:?}, q_o = {:?}, q_m = {:?}, q_c = {:?}",
+                    q_l, q_r, q_o, q_m, q_c
+                );
+                println!(
+                    "Witness values: a_val = {:?}, b_val = {:?}, c_val = {:?}",
+                    a_val, b_val, c_val
+                );
+                println!(
+                    "Constraint computation: q_l * a_val = {:?}, q_r * b_val = {:?}, q_o * c_val = {:?}, q_m * a_val * b_val = {:?}, q_c = {:?}",
+                    q_l * a_val,
+                    q_r * b_val,
+                    q_o * c_val,
+                    q_m * a_val * b_val,
+                    q_c
+                );
+                println!("row index {} out of {}", row_idx, self.plonk_cs.constraints.len());
+                //return Err(format!("Constraint not satisfied at row {}", row_idx));
+            }
+
             // Store in column-major format
             values[a_idx * num_constraints + row_idx] = a_val;
             values[b_idx * num_constraints + row_idx] = b_val;
             values[c_idx * num_constraints + row_idx] = c_val;
+        
         }
-
         Ok(values)
     }
 
@@ -944,8 +1033,24 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             .map_err(|e| format!("Failed to convert Integer to field: {:?}", e))
     }
 
-    // Memoization map to store computed results
+    fn eval_all_vars(&self, inputs: &FxHashMap<String, Value>) -> HashMap<Var, FieldV> {
+        let after_precompute = self.precompute.eval(inputs);
+        let mut cache = Default::default();
+        self.terms
+            .iter()
+            .map(|(var, term)| {
+                let val = eval_cached(term, &after_precompute, &mut cache);
+                if let Value::Field(f) = val {
+                    (var.clone(), f.clone())
+                } else {
+                    panic!("Non-field");
+                }
+            })
+            .collect()
+    }
 
+    // Memoization map to store computed results
+    // Use Precomp module instead with supplied circuit's inputs/outputs variables assignments
     fn term_to_f(&mut self, term: &Term) -> Result<F, String> {
         if let Some(cached_result) = self.memo.get(term) {
             return Ok(*cached_result);
@@ -973,17 +1078,25 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
 
             // Variable lookup
             Op::Var(var) => {
-                if let Some(assigned_value) = self.plonk_cs.witness.iter().find(|wire| {
+                /*if let Some(assigned_value) = self.plonk_cs.witness.iter().find(|wire| {
                     wire.name.starts_with(&*var.name)
                         && wire.name[var.name.len()..].starts_with("_n")
                         && wire.name[var.name.len() + 2..]
                             .chars()
                             .filter(|c| c.is_digit(10))
-                            .count() >= 1
+                            .count()
+                            >= 1
                 }) {
                     let t = self.plonk_cs.wire_values[&assigned_value].clone();
                     println!("var name {}, {:?}", var.name, t);
-                    Ok(self.term_to_f(&t)?)
+                    //Err(format!("No assignment for variable: {}", var.name))
+                    //Ok(self.term_to_f(&t)?)
+                    panic!("")
+                } else {
+                    Err(format!("No assignment for variable: {}", var.name))
+                }*/
+                if let Some(value) = self.var_vals.get(&var.as_ref().name.as_ref().to_string()) {
+                    Ok(*value)
                 } else {
                     Err(format!("No assignment for variable: {}", var.name))
                 }
@@ -1887,6 +2000,7 @@ fn main() {
     println!("{:?}", plonk.wire_values.len());
     use ark_bls12_381::Fr;
     let (circuit, witnesses) = plonk_to_hyperplonk::<Fr>(plonk).unwrap();
+    println!("wits2 = {:?}", witnesses);
     assert!(circuit.is_satisfied(&witnesses));
     // implement optimizer
     match action {

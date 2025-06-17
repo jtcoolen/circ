@@ -62,7 +62,9 @@ pub struct PlonkCs {
     pub public_inputs: Vec<Wire>,
     pub witness: Vec<Wire>,
     pub wire_values: FxHashMap<Wire, Term>,
+    var_vals: FxHashMap<String, Value>,
     next_wire_id: usize,
+    pub all_inputs: Vec<String>,
 }
 
 impl PlonkCs {
@@ -74,7 +76,9 @@ impl PlonkCs {
             public_inputs: Vec::new(),
             witness: Vec::new(),
             wire_values: FxHashMap::default(),
+            var_vals: FxHashMap::default(),
             next_wire_id: 0,
+            all_inputs: Vec::new(),
         }
     }
 
@@ -266,7 +270,7 @@ impl<'cfg> ToPlonk<'cfg> {
         self.constraint(
             1,
             1,
-            -1,
+            1,
             0,
             0, // q_l=1, q_r=1, q_o=-1, q_m=0, q_c=0
             a,
@@ -367,7 +371,7 @@ impl<'cfg> ToPlonk<'cfg> {
             1,
             0,
             0,
-            0,
+            0,  
             0, // q_l=1, q_r=0, q_o=0, q_m=0, q_c=0
             a,
             self.zero.clone(),
@@ -1591,7 +1595,12 @@ impl<'cfg> ToPlonk<'cfg> {
 /// * Plonk constraint system
 pub fn to_plonk(cs: &Computation, cfg: &CircCfg) -> PlonkCs {
     let public_inputs = cs.metadata.public_input_names_set();
-    debug!("public inputs: {:?}", public_inputs);
+    println!("public inputs: {:?}", public_inputs);
+    let all_inputs = cs.metadata.ordered_input_names();
+    let all_inputs_values = cs.precomputes.inputs();
+
+    println!("all inputs: {:?}", all_inputs);
+    println!("all inputs values: {:?}", all_inputs_values);
     let used_vars = extras::free_variables(term(Op::Tuple, cs.outputs.clone()));
     let mut converter = ToPlonk::new(cfg, used_vars.into_iter().collect());
     debug!(
@@ -1603,7 +1612,9 @@ pub fn to_plonk(cs: &Computation, cfg: &CircCfg) -> PlonkCs {
     );
     debug!("declaring inputs");
     let vars = cs.metadata.interactive_vars();
-    trace!("interactive_vars: {:#?}", vars);
+    println!("interactive_vars: {:#?}", vars);
+    println!("vars.instances: {:?}", vars.instances);
+    //println!("vars.")
     for i in &vars.instances {
         converter.embed_var(i, VarType::Inst);
     }
@@ -1614,7 +1625,7 @@ pub fn to_plonk(cs: &Computation, cfg: &CircCfg) -> PlonkCs {
             .collect();
         converter.committed_wit(names_and_terms);
     }
-    for round in &vars.rounds {
+    /*for round in &vars.rounds {
         for w in &round.witnesses {
             converter.embed_var(w, VarType::RoundWit);
         }
@@ -1623,16 +1634,18 @@ pub fn to_plonk(cs: &Computation, cfg: &CircCfg) -> PlonkCs {
         }
         // Note: Plonk doesn't have explicit rounds like R1CS,
         // but we can still process the variables
-    }
+    }*/
     for w in &vars.final_witnesses {
         converter.embed_var(w, VarType::FinalWit);
     }
     debug!("Processing assertions");
     for c in &cs.outputs {
-        converter.assert(c.clone()); // TODO restore
+        converter.assert(c.clone());
     }
-    converter.profile_print();
-    converter.plonk
+    //converter.profile_print();
+    let mut res = converter.plonk;
+    res.all_inputs = all_inputs;
+    res
 }
 
 // Utility function for bit size calculation

@@ -574,8 +574,9 @@ impl FieldV {
         })
     }
 
+    /// new field element
     #[inline]
-    fn new_ty<I>(i: I, ty: FieldT) -> Self
+    pub fn new_ty<I>(i: I, ty: FieldT) -> Self
     where
         i64: From<I>,
     {
@@ -597,7 +598,8 @@ impl FieldV {
         })
     }
 
-    fn random(ty: FieldT, mut rng: impl rand::RngCore) -> Self {
+    /// random element
+    pub fn random(ty: FieldT, mut rng: impl rand::RngCore) -> Self {
         Self::from(match ty {
             FieldT::FBls12381 => FullFieldV::FBls12381(FBls12381::random(rng)),
             FieldT::FBn254 => FullFieldV::FBn254(FBn254::random(rng)),
