@@ -2208,7 +2208,7 @@ fn main() {
     */
 
     println!("Converting to r1cs");
-    let r1cs = to_r1cs(cs.get("main"), cfg());
+    /*let r1cs = to_r1cs(cs.get("main"), cfg());
     let r1cs = if options.skip_linred {
         println!("Skipping linearity reduction, as requested.");
         r1cs
@@ -2220,7 +2220,7 @@ fn main() {
         reduce_linearities(r1cs, cfg())
     };
     println!("Final r1cs: {} constraints", r1cs.constraints().len());
-    println!("{:?}", r1cs.num_vars());
+    println!("{:?}", r1cs.num_vars());*/
     let plonk = to_plonk(cs.get("main"), cfg());
     println!("plonk constraints: {:?}", plonk.constraints.len());
     println!("{:?}", plonk.public_inputs.len());

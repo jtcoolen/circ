@@ -596,6 +596,7 @@ impl<'cfg> ToR1cs<'cfg> {
     /// set).
     fn bv_greater(&mut self, a: TermLc, b: TermLc, n: usize, strict: bool) -> TermLc {
         let tweak = if strict { -1 } else { 0 };
+        println!("NNNN = {}", n);
         let shift = self.r1cs.modulus.new_v(Integer::from(1) << n);
         let sum = a - &b + &shift + tweak;
         // unwrap does not panic because the length is n + 1

@@ -1,2 +1,17 @@
-def main(private field x) -> field:
-    return x+x+x
+//def main(private field x) -> field:
+//    return x+x+x
+
+
+// below fails for R1CS!!! :|
+/*def main(private field x) -> field :
+    field result = 0
+
+    result = if (x % 2) == 0 then x * 3 else x + x + x fi
+
+    return result*/
+def main(private field x) -> field :
+    field result = 0
+
+    result = if (x) == 0 then x * 3 else x + x + x fi
+
+    return result
