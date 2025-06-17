@@ -1,2 +1,2 @@
 def main(private field x) -> field:
-    return x+1
+    return x+x+x
