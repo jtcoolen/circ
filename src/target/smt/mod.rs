@@ -296,6 +296,7 @@ impl<'a, Br: ::std::io::BufRead> ModelParser<String, Sort, Value, &'a mut SmtPar
         } else if input.try_tag("#b")? {
             let bits = input.get_sexpr()?;
             let i = Integer::from_str_radix(bits, 2).unwrap();
+            println!("len = {}", bits.len());
             Value::BitVector(BitVector::new(i, bits.len()))
         } else if input.try_tag("(_")? {
             if input.try_tag("bv")? {

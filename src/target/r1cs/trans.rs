@@ -390,7 +390,8 @@ impl<'cfg> ToR1cs<'cfg> {
     }
 
     fn embed(&mut self, t: Term) {
-        debug!("Embed: {}", t);
+        println!("Embed: {}", t);
+
         let visited_set_rc = self.embed.clone();
         for c in
             extras::PostOrderSkipIter::new(t, &move |s: &Term| visited_set_rc.borrow().contains(s))
@@ -853,8 +854,10 @@ impl<'cfg> ToR1cs<'cfg> {
                                 // so, since we don't care about b == 0,
                                 // q == M or r < b
                                 // not(q != M and r >= b)
-                                let r_ge_b = self.bv_greater(r, b, n, false);
-                                let max = self.r1cs.modulus.new_v((Integer::from(1) << n) - 1);
+                                let r_ge_b = self.bv_greater(r, b, 254, false);
+                                let i = (Integer::from(1) << 254) - 1;
+                                println!("i={}", i);
+                                let max = self.r1cs.modulus.new_v(i);
                                 let q_eq_max = self.is_zero(q - &max);
                                 let q_ne_max = self.bool_not(&q_eq_max);
                                 self.constraint(r_ge_b.1, q_ne_max.1, self.r1cs.zero());

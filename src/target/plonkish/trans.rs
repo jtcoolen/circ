@@ -225,6 +225,30 @@ impl<'cfg> ToPlonk<'cfg> {
         self.plonk.add_constraint(constraint);
     }
 
+    fn constraint_f(
+        &mut self,
+        q_l: FieldV,
+        q_r: FieldV,
+        q_o: FieldV,
+        q_m: FieldV,
+        q_c: FieldV,
+        a: Wire,
+        b: Wire,
+        c: Wire,
+    ) {
+        let constraint = PlonkConstraint {
+            q_l,
+            q_r,
+            q_o,
+            q_m,
+            q_c,
+            a,
+            b,
+            c,
+        };
+        self.plonk.add_constraint(constraint);
+    }
+
     /// Enforce `x` to be bit-valued: x * (x - 1) = 0
     fn enforce_bit(&mut self, b: Wire) {
         // x * (x - 1) = 0  =>  x * x - x = 0  =>  q_m * a * b + q_l * a = 0
@@ -243,6 +267,7 @@ impl<'cfg> ToPlonk<'cfg> {
 
     /// Get a new bit-valued variable
     fn fresh_bit<D: Display + ?Sized>(&mut self, ctx: &D, comp: Term) -> Wire {
+        println!("check({}) = {}", ctx, check(&comp));
         debug_assert!(matches!(check(&comp), Sort::Bool));
         let comp = term![Op::Ite; comp, self.one_term(), self.zero_term()];
         let v = self.fresh_var(ctx, comp, VarType::FinalWit);
@@ -364,6 +389,25 @@ impl<'cfg> ToPlonk<'cfg> {
         result
     }
 
+    fn mul_const_f(&mut self, a: Wire, c: FieldV) -> Wire {
+        let const_term = term![Op::Const(Box::new(Value::Field(c.clone())))];
+        let mul_term = term![PF_MUL; self.plonk.wire_values[&a].clone(), const_term];
+        let result = self.fresh_wit("mul_const", mul_term);
+
+        // c * a - result = 0  =>  q_l * (c * a) + q_o * result = 0
+        self.constraint_f(
+            c,
+            self.field.new_v(0),
+            self.field.new_v(-1),
+            self.field.new_v(0),
+            self.field.new_v(0), // q_l=c, q_r=0, q_o=-1, q_m=0, q_c=0
+            a,
+            self.zero.clone(),
+            result.clone(),
+        );
+        result
+    }
+
     /// Assert that a wire equals zero
     fn assert_zero(&mut self, a: Wire) {
         // a = 0  =>  q_l * a = 0
@@ -371,7 +415,7 @@ impl<'cfg> ToPlonk<'cfg> {
             1,
             0,
             0,
-            0,  
+            0,
             0, // q_l=1, q_r=0, q_o=0, q_m=0, q_c=0
             a,
             self.zero.clone(),
@@ -464,7 +508,7 @@ impl<'cfg> ToPlonk<'cfg> {
                 acc.clone()
             };
 
-            let scaled_bit = self.mul_const(bit, coeff.to_string().parse().unwrap_or(1));
+            let scaled_bit = self.mul_const_f(bit, coeff);
             result = self.add(result, scaled_bit);
 
             acc *= &self.field.new_v(2u8);
@@ -865,7 +909,10 @@ impl<'cfg> ToPlonk<'cfg> {
     }
 
     fn get_pf(&self, term: &Term) -> &Wire {
-        match self.cache.get(term).unwrap_or_else(|| panic!("Missing wire for {:?}", term))
+        match self
+            .cache
+            .get(term)
+            .unwrap_or_else(|| panic!("Missing wire for {:?}", term))
         {
             EmbeddedTerm::Field(wire) => wire,
             _ => panic!("Non-field for {:?}", term),
@@ -980,7 +1027,7 @@ impl<'cfg> ToPlonk<'cfg> {
 
     /// Get boolean wire from term
     fn get_bool_wire(&mut self, term: &Term) -> Wire {
-        if let Some(embedded) = self.cache.get(term) {
+        /*if let Some(embedded) = self.cache.get(term) {
             match embedded {
                 EmbeddedTerm::Bool(wire) => wire.clone(),
                 _ => panic!("Expected boolean term"),
@@ -991,6 +1038,14 @@ impl<'cfg> ToPlonk<'cfg> {
             self.cache
                 .insert(term.clone(), EmbeddedTerm::Bool(wire.clone()));
             wire
+        }*/
+        match self
+            .cache
+            .get(term)
+            .unwrap_or_else(|| panic!("Missing wire for {:?}", term))
+        {
+            EmbeddedTerm::Bool(b) => b.clone(),
+            _ => panic!("Non-boolean for {:?}", term),
         }
     }
 
@@ -1010,7 +1065,7 @@ impl<'cfg> ToPlonk<'cfg> {
     /// Given a and b such that -2^n < a - b < 2^n, returns whether a >= b (or a > b if `strict` is set)
     fn bv_greater(&mut self, a: Wire, b: Wire, n: usize, strict: bool) -> Wire {
         let tweak = if strict { -1 } else { 0 };
-        let shift_val = self.field.new_v(Integer::from(1) << n);
+        let shift_val = self.field.new_v((Integer::from(1) << 254));
         let shift_wire = self.const_wire(shift_val);
         let tweak_wire = self.const_wire(self.field.new_v(tweak));
 
@@ -1020,8 +1075,8 @@ impl<'cfg> ToPlonk<'cfg> {
         let sum = self.add(sum1, tweak_wire);
 
         // Extract the top bit (bit n) which indicates if sum >= 2^n
-        let bits = self.bitify("cmp", &sum, n + 1, false);
-        bits[n].clone() // Return the (n+1)th bit (0-indexed)
+        self.bitify("cmp", &sum, n + 1, false).pop().unwrap()
+        //bits[n].clone() // Return the (n+1)th bit (0-indexed)
     }
 
     /// Treating `xs` and `ys` as unsigned bit-vectors (with LSB at index 0), emit a bit-wise comparison circuit
@@ -1286,35 +1341,39 @@ impl<'cfg> ToPlonk<'cfg> {
                             }
                             BvBinOp::Udiv | BvBinOp::Urem => {
                                 // Division requires witness generation
-                                let q_wire = self.fresh_wit(
-                                    "div_q",
-                                    term![Op::Const(Box::new(Value::Field(self.field.new_v(0))))],
-                                );
-                                let r_wire = self.fresh_wit(
-                                    "div_r",
-                                    term![Op::Const(Box::new(Value::Field(self.field.new_v(0))))],
-                                );
-
-                                let qb = self.bitify("div_q", &q_wire, n, false);
-                                let rb = self.bitify("div_r", &r_wire, n, false);
+                                let a_bv_term =
+                                    term![Op::PfToBv(n); self.plonk.wire_values[&a].clone()];
+                                let b_bv_term =
+                                    term![Op::PfToBv(n); self.plonk.wire_values[&b].clone()];
+                                let q_term = term![Op::new_ubv_to_pf(self.field.clone()); term![BV_UDIV; a_bv_term.clone(), b_bv_term.clone()]];
+                                let r_term = term![Op::new_ubv_to_pf(self.field.clone()); term![BV_UREM; a_bv_term, b_bv_term]];
+                                let q = self.fresh_wit("div_q", q_term);
+                                let r = self.fresh_wit("div_r", r_term);
+                                let qb = self.bitify("div_q", &q, n, false);
+                                let rb = self.bitify("div_r", &r, n, false);
 
                                 // Constraint: a = q * b + r
-                                let qb_product = self.mul(q_wire.clone(), b.clone());
-                                let reconstruction = self.add(qb_product, r_wire.clone());
+                                let qb_product = self.mul(q.clone(), b.clone());
+                                let reconstruction = self.add(qb_product, r.clone());
                                 self.assert_equal(a, reconstruction);
 
                                 // Division by zero handling and remainder constraint
-                                let r_ge_b = self.bv_greater(r_wire, b, n, false);
-                                let max_val = self.field.new_v((Integer::from(1) << n) - 1);
+                                let r_ge_b = self.bv_greater(r, b, n, false);
+                                let max_val = self.field.new_v((Integer::from(1) << 254) - 1);
                                 let max_wire = self.const_wire(max_val);
-                                let sub_wire = self.sub(q_wire, max_wire);
-                                let q_eq_max = self.is_zero(sub_wire);
-                                let q_ne_max = self.bool_not(q_eq_max);
 
-                                // Constraint: NOT(r >= b AND q != max)
-                                let bad_case = self.bool_and(r_ge_b, q_ne_max);
-                                let not_bad = self.bool_not(bad_case);
-                                self.assert_bool(&term![Op::Const(Box::new(Value::Bool(true)))]);
+                                let sub_wire = self.sub(q, max_wire);
+                                let q_eq_max = self.is_zero(sub_wire);
+
+                                // Check conditions
+                                let one = self.fresh_wit("one", self.one_term());
+                                let q_not_equals_max = self.sub(one, q_eq_max);
+
+                                // We want NOT(r_geq_b AND q_not_equals_max) = 1
+                                // Which means: (r_geq_b AND q_not_equals_max) = 0
+                                // So: r_geq_b * q_not_equals_max = 0
+                                let and_product = self.mul(r_ge_b, q_not_equals_max);
+                                self.assert_zero(and_product.clone());
 
                                 let bits = match o {
                                     BvBinOp::Udiv => qb,

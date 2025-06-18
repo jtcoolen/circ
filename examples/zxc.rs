@@ -14,8 +14,8 @@ use circ::front::zsharp::{self, ZSharpFE};
 use circ::front::{FrontEnd, Mode};
 use circ::ir::opt::{opt, Opt};
 use circ::ir::term::{Op, Term};
-use circ_fields::FullFieldV::FBls12381;
 use circ::target::r1cs::wit_comp;
+use circ_fields::FullFieldV::FBls12381;
 use fxhash::FxHashMap;
 use rug::Integer;
 
@@ -671,23 +671,23 @@ impl<F: PrimeField> PlonkishCircuit<F> {
     }
 
     pub fn is_satisfied(&self, values: &[F]) -> bool {
-        println!("\n\nvalues = {:?}\n\n", values);
-        println!("\n\nselectors = {:?}\n\n", self.selectors);
+        //println!("\n\nvalues = {:?}\n\n", values);
+        //println!("\n\nselectors = {:?}\n\n", self.selectors);
 
         let gate_constraint = (0..self.params.num_constraints).into_par_iter().all(|i| {
-            let res = self.params
+            let res = self
+                .params
                 .gate_func
                 .evaluate(&self.selector_row(i), &self.witness_row(values, i))
                 == F::zero();
-                println!("selectors = {:?}", self.selector_row(i));
-                println!("wits = {:?}", self.witness_row(values, i));
-            println!("res = {}", res);
+            //println!("selectors = {:?}", self.selector_row(i));
+            //println!("wits = {:?}", self.witness_row(values, i));
+            //println!("res = {}", res);
             res
         });
         if !gate_constraint {
             return false;
         }
-    
 
         let wiring_constraint = (0..self.permutation.len()).into_par_iter().all(|i| {
             let next_idx_val = self.permutation[i].into_bigint();
@@ -724,12 +724,12 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         let terms = wire_values
             .iter()
             .filter_map(|(_, term)| {
-            if let Op::Var(var) = term.op() {
-                println!("var {:?} = {:?}", var.name, term);
-                Some((var.as_ref().clone(), term.clone()))
-            } else {
-                None
-            }
+                if let Op::Var(var) = term.op() {
+                    println!("var {:?} = {:?}", var.name, term);
+                    Some((var.as_ref().clone(), term.clone()))
+                } else {
+                    None
+                }
             })
             .collect::<FxHashMap<_, _>>();
         println!("public inputs = {:?}", plonk_cs.public_inputs);
@@ -748,7 +748,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         );
         // Map input_names to random Value in the inputs FxHashMap<String, Value>
         /*for input_name in input_names {
-            
+
             let random_value = Value::Field(FieldV::random(FieldT::FBls12381, &mut rng));
             inputs.insert(input_name, random_value);
         }*/
@@ -936,46 +936,45 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         // Fill witness values
         for (row_idx, constraint) in self.plonk_cs.constraints.clone().into_iter().enumerate() {
             let a_term = self
-            .plonk_cs
-            .wire_values
-            .get(&constraint.a)
-            .ok_or("Wire a value not found")?;
+                .plonk_cs
+                .wire_values
+                .get(&constraint.a)
+                .ok_or("Wire a value not found")?;
             let a_term = a_term.clone();
             // Get values from wire_values map and convert Term to F
             let a_val = self.term_to_f(&a_term)?;
 
             let b_term = self
-            .plonk_cs
-            .wire_values
-            .get(&constraint.b)
-            .ok_or("Wire b value not found")?;
+                .plonk_cs
+                .wire_values
+                .get(&constraint.b)
+                .ok_or("Wire b value not found")?;
             let b_term = b_term.clone();
             let b_val = self.term_to_f(&b_term)?;
 
             let c_term = self
-            .plonk_cs
-            .wire_values
-            .get(&constraint.c)
-            .ok_or("Wire c value not found")?;
+                .plonk_cs
+                .wire_values
+                .get(&constraint.c)
+                .ok_or("Wire c value not found")?;
             let c_term = c_term.clone();
             let c_val = self.term_to_f(&c_term)?;
 
             let a_idx = self
-            .wire_to_index
-            .get(&constraint.a)
-            .ok_or("Wire a not found")?;
+                .wire_to_index
+                .get(&constraint.a)
+                .ok_or("Wire a not found")?;
 
             let b_idx = self
-            .wire_to_index
-            .get(&constraint.b)
-            .ok_or("Wire b not found")?;
+                .wire_to_index
+                .get(&constraint.b)
+                .ok_or("Wire b not found")?;
 
             let c_idx = self
-            .wire_to_index
-            .get(&constraint.c)
-            .ok_or("Wire c not found")?;
+                .wire_to_index
+                .get(&constraint.c)
+                .ok_or("Wire c not found")?;
 
-  
             // Check constraint holds
             let q_l = self.field_v_to_f(&constraint.q_l)?;
             let q_r = self.field_v_to_f(&constraint.q_r)?;
@@ -984,11 +983,8 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             let q_c = self.field_v_to_f(&constraint.q_c)?;
 
             println!("row idx {} , q_o = {:?}, {}", row_idx, q_o, q_o.to_string());
-            let constraint_value = q_l * a_val
-            + q_r * b_val
-            + q_o * c_val
-            + q_m * a_val * b_val
-            + q_c;
+            let constraint_value =
+                q_l * a_val + q_r * b_val + q_o * c_val + q_m * a_val * b_val + q_c;
 
             println!(
                 "\n\nSelector values: q_l = {:?}, q_r = {:?}, q_o = {:?}, q_m = {:?}, q_c = {:?}\n\n",
@@ -999,7 +995,6 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                 a_val, b_val, c_val
             );
             if constraint_value != F::zero() {
-
                 println!(
                     "Constraint computation: q_l * a_val = {:?}, q_r * b_val = {:?}, q_o * c_val = {:?}, q_m * a_val * b_val = {:?}, q_c = {:?}",
                     q_l * a_val,
@@ -1008,7 +1003,12 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                     q_m * a_val * b_val,
                     q_c
                 );
-                println!("row index {} out of {} = {}", row_idx, self.plonk_cs.constraints.len(), constraint_value);
+                println!(
+                    "row index {} out of {} = {}",
+                    row_idx,
+                    self.plonk_cs.constraints.len(),
+                    constraint_value
+                );
                 return Err(format!("Constraint not satisfied at row {}", row_idx));
             }
 
@@ -1016,7 +1016,6 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             values[0 * num_constraints + row_idx] = a_val;
             values[1 * num_constraints + row_idx] = b_val;
             values[2 * num_constraints + row_idx] = c_val;
-        
         }
         Ok(values)
     }
@@ -1036,9 +1035,15 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
     // Helper function to convert Integer to field element
     fn integer_to_field(&self, int_val: &Integer) -> Result<F, String> {
         // Convert Integer to bytes then to field element
-        let bytes = int_val.to_digits(rug::integer::Order::Lsf);
-        F::deserialize_compressed(&bytes[..])
-            .map_err(|e| format!("Failed to convert Integer to field: {:?}", e))
+        let mut bytes = int_val.to_digits(rug::integer::Order::Lsf);
+        let field_byte_size = (F::MODULUS_BIT_SIZE + 7) / 8; // Calculate the expected byte size
+        if bytes.len() < field_byte_size as usize {
+            bytes.resize(field_byte_size as usize, 0); // Pad with zeros
+        }
+        let res = F::deserialize_compressed(&bytes[..])
+            .map_err(|e| format!("Failed to convert Integer to field: {:?}", e));
+        //println!("int = {}, bytes = {:?}, is_ok = {}", int_val, bytes, res.is_ok());
+        res
     }
 
     fn eval_all_vars(&self, inputs: &FxHashMap<String, Value>) -> HashMap<Var, FieldV> {
@@ -1935,17 +1940,11 @@ enum ProofOption {
     Prove,
 }
 
-
-
-
 // ====
 
+use ark_ff::Field;
 
-
-use ark_ff::{ Field};
-
-use hyperplonk::{ witness};
-
+use hyperplonk::witness;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -1964,7 +1963,6 @@ struct Cli {
     /// JSON witness file (e.g. witness.json)
     witness: String,
 }
-
 
 pub fn pad_permutation_field<F: PrimeField>(
     mut permutation: Vec<F>,
@@ -2017,7 +2015,6 @@ pub fn pad_permutation_field<F: PrimeField>(
     new_permutation
 }
 
-
 /// Checks that the permutation is a valid reordering of the witnesses with correct cycles.
 ///
 /// A correct permutation must:
@@ -2031,13 +2028,17 @@ pub fn check_permutation<F: PrimeField>(
 ) -> bool {
     let len = witnesses.len();
     if permutation.len() != len {
-        println!("Permutation length mismatch: expected {}, got {}", len, permutation.len());
+        println!(
+            "Permutation length mismatch: expected {}, got {}",
+            len,
+            permutation.len()
+        );
         return false;
-    
     }
 
     let zero = F::zero();
-    let zero_indices: Vec<usize> = permutation.iter()
+    let zero_indices: Vec<usize> = permutation
+        .iter()
         .enumerate()
         .filter_map(|(i, &val)| if val == zero { Some(i) } else { None })
         .collect();
@@ -2087,8 +2088,6 @@ pub fn check_permutation<F: PrimeField>(
     seen.into_iter().all(|v| v)
 }
 
-
-
 fn split_flat_witness<F: Clone + ark_std::Zero>(
     flat_witness: &[F],
     num_columns: usize,
@@ -2127,10 +2126,7 @@ fn split_flat_witness<F: Clone + ark_std::Zero>(
     columns
 }
 
-
-pub fn flatten_witness_matrix_preserve_padding<F: Clone>(
-    columns: &[Vec<F>],
-) -> Vec<F> {
+pub fn flatten_witness_matrix_preserve_padding<F: Clone>(columns: &[Vec<F>]) -> Vec<F> {
     let num_columns = columns.len();
     let padded_num_rows = columns
         .first()
@@ -2152,7 +2148,6 @@ pub fn flatten_witness_matrix_preserve_padding<F: Clone>(
 
     flat
 }
-
 
 // ===
 
@@ -2207,9 +2202,9 @@ fn main() {
     let instance = options.instance;
     */
 
-    println!("Converting to r1cs");
-    /*let r1cs = to_r1cs(cs.get("main"), cfg());
-    let r1cs = if options.skip_linred {
+    //println!("Converting to r1cs");
+    //let r1cs = to_r1cs(cs.get("main"), cfg());
+    /*let r1cs = if options.skip_linred {
         println!("Skipping linearity reduction, as requested.");
         r1cs
     } else {
@@ -2229,13 +2224,10 @@ fn main() {
     println!("{:?}", plonk.wire_values.len());
     use ark_bls12_381::Fr;
     let (mut plonkish_circuit, plonkish_witness) = plonk_to_hyperplonk::<Fr>(plonk).unwrap();
-    println!("wits2 = {:?}", plonkish_witness);
+    //println!("wits2 = {:?}", plonkish_witness);
     assert!(plonkish_circuit.is_satisfied(&plonkish_witness));
 
-
-
     // =========
-
 
     let num_rows: usize = plonkish_circuit.params.num_constraints; //num_constraints
     let num_columns = plonkish_circuit.params.gate_func.num_witness_columns();
@@ -2248,33 +2240,34 @@ fn main() {
             .collect();
 
     let witnesses_vec: Vec<Vec<_>> = witnesses
-            .iter()
-            .map(|w| w.coeff_ref().to_vec())  // Convert each slice into an owned Vec
-            .collect();
-        
-    let witnesses_flattened = flatten_witness_matrix_preserve_padding(&witnesses_vec);
+        .iter()
+        .map(|w| w.coeff_ref().to_vec()) // Convert each slice into an owned Vec
+        .collect();
 
+    let witnesses_flattened = flatten_witness_matrix_preserve_padding(&witnesses_vec);
 
     use ark_std::log2;
 
     use ark_std::Zero;
-
 
     let selectors = plonkish_circuit.selectors.clone();
     println!("#selectors = {}", selectors.len());
 
     plonkish_circuit.params.num_constraints =
         plonkish_circuit.params.num_constraints.next_power_of_two();
-    plonkish_circuit.params.num_pub_input = plonkish_circuit.params.num_pub_input.next_power_of_two();
+    plonkish_circuit.params.num_pub_input =
+        plonkish_circuit.params.num_pub_input.next_power_of_two();
 
     let padding = num_pub_inputs.next_power_of_two() - num_pub_inputs;
 
-    
-    let num_priv_inputs = num_rows - num_pub_inputs;
+    // TODO Padding function broken
+    /*let num_priv_inputs = num_rows - num_pub_inputs;
     let pub_padding = num_pub_inputs.next_power_of_two() - num_pub_inputs;
     let total_len = num_pub_inputs + pub_padding + num_priv_inputs;
 
-    let mut padded_selectors: Vec<Vec<ark_ff::Fp<ark_ff::MontBackend<ark_bls12_381::FrConfig, 4>, 4>>> = vec![vec![Fr::zero(); total_len]; selectors.len()];
+    let mut padded_selectors: Vec<
+        Vec<ark_ff::Fp<ark_ff::MontBackend<ark_bls12_381::FrConfig, 4>, 4>>,
+    > = vec![vec![Fr::zero(); total_len]; selectors.len()];
 
     for (i, sel_column) in selectors.iter().enumerate() {
         // Copy public inputs
@@ -2289,13 +2282,13 @@ fn main() {
                 sel_column.0[num_pub_inputs + j].clone();
         }
     }
-    
 
-    let padded_selectors: Vec<SelectorColumn<ark_ff::Fp<ark_ff::MontBackend<ark_bls12_381::FrConfig, 4>, 4>>> = padded_selectors
-            .into_iter()
-            .map(|col| SelectorColumn(col))
-            .collect()
-    ;
+    let padded_selectors: Vec<
+        SelectorColumn<ark_ff::Fp<ark_ff::MontBackend<ark_bls12_381::FrConfig, 4>, 4>>,
+    > = padded_selectors
+        .into_iter()
+        .map(|col| SelectorColumn(col))
+        .collect();
 
     let new_num_rows = num_rows + padding;
     let padded_num_rows = num_rows.next_power_of_two();
@@ -2306,18 +2299,14 @@ fn main() {
     let expected_length = chunk_size * num_columns;
     let mut permutation = plonkish_circuit.permutation.clone();
 
+    let mut new_permutation =
+        pad_permutation_field(permutation.clone(), num_rows, padding, expected_length);
 
-    let mut new_permutation = pad_permutation_field(
-        permutation.clone(),
-        num_rows,
-        padding,
-        expected_length,
+    assert_eq!(
+        plonkish_circuit.params.num_constraints,
+        witnesses[0].coeff_ref().len()
     );
 
-
-    assert_eq!(plonkish_circuit.params.num_constraints , witnesses[0].coeff_ref().len());
-    
-    
     assert!(
         check_permutation(&plonkish_witness, &permutation, num_rows),
         "Permutation check failed"
@@ -2328,20 +2317,27 @@ fn main() {
         "Permutation check failed"
     );*/
 
-
     let circuit: HyperPlonkIndex<ark_ff::Fp<ark_ff::MontBackend<ark_bls12_381::FrConfig, 4>, 4>> =
         HyperPlonkIndex {
             params: convert_params(plonkish_circuit.params.clone()),
             permutation: new_permutation,
             selectors: convert_selectors(padded_selectors),
         };
-    assert_eq!(plonkish_circuit.params.num_constraints , circuit.selectors[0].0.len());
+    assert_eq!(
+        plonkish_circuit.params.num_constraints,
+        circuit.selectors[0].0.len()
+    );
 
     println!("Num gates: {}", num_columns);
-    println!("Num constraints (after padding): {}", circuit.params.num_constraints);
-    println!("Num public inputs (after padding): {}", circuit.params.num_pub_input);
+    println!(
+        "Num constraints (after padding): {}",
+        circuit.params.num_constraints
+    );
+    println!(
+        "Num public inputs (after padding): {}",
+        circuit.params.num_pub_input
+    );
 
-   
     use ark_ff::PrimeField;
     use std::str::FromStr;
 
@@ -2367,11 +2363,9 @@ fn main() {
         srs
     };
     use ark_ff::BigInt;
-    
+
     let mut public_inputs = plonkish_witness[..num_pub_inputs].to_vec();
     public_inputs.resize(num_pub_inputs.next_power_of_two(), Fr::zero());
-    
-   
 
     let start = Instant::now();
 
@@ -2382,7 +2376,6 @@ fn main() {
         .unwrap();
 
     println!("key extraction: {:?}", start.elapsed());
-
 
     //==========================================================
     // generate a proof
@@ -2417,7 +2410,6 @@ fn main() {
     assert!(verify);
 
     println!("verifying: {:?}", start.elapsed());
-
 
     // implement optimizer
     match action {
@@ -2464,5 +2456,5 @@ fn main() {
             verify_proof(&pvk, &pf, &instance_vec).unwrap();
             */
         }
-    };
+    };*/
 }
