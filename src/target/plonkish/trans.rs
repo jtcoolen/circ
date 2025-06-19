@@ -9,6 +9,7 @@ use crate::target::plonkish::VarType;
 use circ_fields::{FieldT, FieldV};
 use circ_opt::FieldDivByZero;
 use im::HashSet;
+use itertools::assert_equal;
 use log::{debug, trace};
 
 use fxhash::FxHashMap;
@@ -1355,7 +1356,8 @@ impl<'cfg> ToPlonk<'cfg> {
                                 // Constraint: a = q * b + r
                                 let qb_product = self.mul(q.clone(), b.clone());
                                 let reconstruction = self.add(qb_product, r.clone());
-                                self.assert_equal(a, reconstruction);
+                                let diff = self.sub(a, reconstruction);
+                                self.assert_zero(diff);
 
                                 // Division by zero handling and remainder constraint
                                 let r_ge_b = self.bv_greater(r, b, n, false);

@@ -12,10 +12,9 @@
 def main(private field x) -> field :
     field result = 0
 
-    field q = 2
-    field rem = (x % q)
-    field zero = 0
-    bool res = (rem == zero)
-    result = if res then x else x + 2*x fi
+    //result = x + x + x
+
+    result = if x % 3 == 0 then x else x + 2*x fi
+    //result = if x % 3 == 1 then 3*x else x + 3*x fi // fails
 
     return result

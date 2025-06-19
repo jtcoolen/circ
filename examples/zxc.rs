@@ -696,6 +696,7 @@ impl<F: PrimeField> PlonkishCircuit<F> {
                 return false;
             }
             if values[i] != values[next_idx[0] as usize] {
+                println!("i = {}, next_idx = {}", i, next_idx[0]);
                 return false;
             }
             true
@@ -752,6 +753,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             let random_value = Value::Field(FieldV::random(FieldT::FBls12381, &mut rng));
             inputs.insert(input_name, random_value);
         }*/
+        println!("terms = {:?}", terms.clone().into_values());
         Self {
             wire_to_index: HashMap::new(),
             next_witness_index: 0,
@@ -831,6 +833,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         }
 
         self.next_witness_index = index;
+        println!("next_witness_index = {}", index);
         Ok(())
     }
 
@@ -870,8 +873,8 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
     }
 
     /// Create permutation vector from copy constraints
-    fn create_permutation_vector(&self, plonk_cs: &PlonkCs) -> Result<Vec<F>, String> {
-        let total_vars = self.next_witness_index * plonk_cs.constraints.len();
+    /*fn create_permutation_vector(&self, plonk_cs: &PlonkCs) -> Result<Vec<F>, String> {
+        let total_vars = 3 * plonk_cs.constraints.len();
         let mut permutation = Vec::with_capacity(total_vars);
 
         // Initialize permutation as identity
@@ -879,6 +882,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             permutation.push(F::from(i as u64));
         }
 
+        println!("#copy constraints = {}", plonk_cs.copy_constraints.len());
         // Apply copy constraints to create cycles in permutation
         for copy_constraint in &plonk_cs.copy_constraints {
             let wire1_idx = self
@@ -900,6 +904,44 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                 permutation[var1_global] = permutation[var2_global];
                 permutation[var2_global] = temp;
             }
+        }
+
+        println!("#permutation = {}", permutation.len());
+        panic!();
+        Ok(permutation)
+    }*/
+
+    pub fn create_permutation_vector(&self, plonk_cs: &PlonkCs) -> Result<Vec<F>, String> {
+        // Step 1: Build the witness table
+        let mut witness_table = Vec::new();
+        let mut wire_to_indices = HashMap::new();
+
+        for (i, constraint) in plonk_cs.constraints.iter().enumerate() {
+            // Add (a, b, c) to the witness table
+            witness_table.push((
+                constraint.a.clone(),
+                constraint.b.clone(),
+                constraint.c.clone(),
+            ));
+
+            // Map wire IDs to their positions in the witness table
+            wire_to_indices.insert(constraint.a.id, i * 3);
+            wire_to_indices.insert(constraint.b.id, i * 3 + 1);
+            wire_to_indices.insert(constraint.c.id, i * 3 + 2);
+        }
+
+        // Step 2: Build the permutation vector
+        let mut permutation = (0..(3 * plonk_cs.constraints.len()))
+            .map(|i| F::from(i as u64))
+            .collect::<Vec<_>>();
+
+        for copy_constraint in plonk_cs.copy_constraints.clone() {
+            let idx1 = *wire_to_indices.get(&copy_constraint.wire1.id).unwrap();
+            let idx2 = *wire_to_indices.get(&copy_constraint.wire2.id).unwrap();
+
+            // Link the two indices in the permutation vector
+            permutation[idx1] = F::from(idx2 as u64);
+            permutation[idx2] = F::from(idx1 as u64);
         }
 
         Ok(permutation)
@@ -924,8 +966,10 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
     /// Create witness values matrix from PlonkCs
     pub fn create_witness_values(&mut self) -> Result<Vec<F>, String> {
         let num_constraints = self.plonk_cs.constraints.clone().len();
-        let num_witnesses = self.next_witness_index.clone();
-        let mut values = vec![F::zero(); num_witnesses * num_constraints];
+        //let num_witnesses = self.next_witness_index.clone();
+        println!("num_witnesses: {}", self.next_witness_index);
+        println!("num_constraints = {}", self.plonk_cs.constraints.len());
+        let mut values = vec![F::zero(); 3 * num_constraints];
 
         let vars: HashMap<Var, FieldV> = self.eval_all_vars(&self.inputs);
         for (var, field_v) in vars {
@@ -982,18 +1026,18 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             let q_m = self.field_v_to_f(&constraint.q_m)?;
             let q_c = self.field_v_to_f(&constraint.q_c)?;
 
-            println!("row idx {} , q_o = {:?}, {}", row_idx, q_o, q_o.to_string());
+            //println!("row idx {} , q_o = {:?}, {}", row_idx, q_o, q_o.to_string());
             let constraint_value =
                 q_l * a_val + q_r * b_val + q_o * c_val + q_m * a_val * b_val + q_c;
 
-            println!(
+            /*println!(
                 "\n\nSelector values: q_l = {:?}, q_r = {:?}, q_o = {:?}, q_m = {:?}, q_c = {:?}\n\n",
                 q_l, q_r, q_o, q_m, q_c
             );
             println!(
                 "\n\nWitness values: a_val = {:?}, b_val = {:?}, c_val = {:?}\n\n",
                 a_val, b_val, c_val
-            );
+            );*/
             if constraint_value != F::zero() {
                 println!(
                     "Constraint computation: q_l * a_val = {:?}, q_r * b_val = {:?}, q_o * c_val = {:?}, q_m * a_val * b_val = {:?}, q_c = {:?}",
@@ -1973,9 +2017,16 @@ pub fn pad_permutation_field<F: PrimeField>(
     let mut new_permutation = permutation;
     let mut current_offset = 0;
 
+    println!("original permutation length = {}", new_permutation.len());
+
     let mut chunk_start = 0;
     while chunk_start + num_rows <= new_permutation.len() {
         let insert_at = chunk_start + num_rows + current_offset;
+        println!(
+            "inserting at {}, new_permutation.len() = {}",
+            insert_at,
+            new_permutation.len()
+        );
 
         // Insert padding block
         for i in 0..padding {
@@ -2223,8 +2274,16 @@ fn main() {
     println!("{:?}", plonk.copy_constraints.len());
     println!("{:?}", plonk.wire_values.len());
     use ark_bls12_381::Fr;
-    let (mut plonkish_circuit, plonkish_witness) = plonk_to_hyperplonk::<Fr>(plonk).unwrap();
+    let (mut plonkish_circuit, plonkish_witness) =
+        plonk_to_hyperplonk::<Fr>(plonk.clone()).unwrap();
     //println!("wits2 = {:?}", plonkish_witness);
+    println!(
+        "plonkish circuit permutation length = {}",
+        plonkish_circuit.permutation.len()
+    );
+    println!("plonkish circuit wits length = {}", plonkish_witness.len());
+    println!("nb copy constraints = {}", plonk.copy_constraints.len());
+
     assert!(plonkish_circuit.is_satisfied(&plonkish_witness));
 
     // =========
@@ -2261,9 +2320,13 @@ fn main() {
     let padding = num_pub_inputs.next_power_of_two() - num_pub_inputs;
 
     // TODO Padding function broken
-    /*let num_priv_inputs = num_rows - num_pub_inputs;
+    let num_priv_inputs = num_rows - num_pub_inputs;
     let pub_padding = num_pub_inputs.next_power_of_two() - num_pub_inputs;
     let total_len = num_pub_inputs + pub_padding + num_priv_inputs;
+    println!(
+        "num_priv_inputs = {}, pub_padding = {}, total_len = {}",
+        num_priv_inputs, pub_padding, total_len
+    );
 
     let mut padded_selectors: Vec<
         Vec<ark_ff::Fp<ark_ff::MontBackend<ark_bls12_381::FrConfig, 4>, 4>>,
@@ -2294,6 +2357,11 @@ fn main() {
     let padded_num_rows = num_rows.next_power_of_two();
     let pad = padded_num_rows - num_rows;
 
+    println!(
+        "new_num_rows = {}, padded_num_rows = {}, pad = {}",
+        new_num_rows, padded_num_rows, pad
+    );
+
     let chunk_size = 1 << log2(plonkish_circuit.params.num_constraints) as usize;
     assert_eq!(chunk_size, padded_num_rows);
     let expected_length = chunk_size * num_columns;
@@ -2312,10 +2380,14 @@ fn main() {
         "Permutation check failed"
     );
     // TODO investigate permutation length mismatch + not passing
-    /*assert!(
-        check_permutation(&witnesses_flattened, &new_permutation, num_rows.next_power_of_two()),
+    assert!(
+        check_permutation(
+            &witnesses_flattened,
+            &new_permutation,
+            num_rows.next_power_of_two()
+        ),
         "Permutation check failed"
-    );*/
+    );
 
     let circuit: HyperPlonkIndex<ark_ff::Fp<ark_ff::MontBackend<ark_bls12_381::FrConfig, 4>, 4>> =
         HyperPlonkIndex {
@@ -2456,5 +2528,5 @@ fn main() {
             verify_proof(&pvk, &pf, &instance_vec).unwrap();
             */
         }
-    };*/
+    };
 }
