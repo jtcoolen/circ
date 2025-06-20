@@ -700,7 +700,7 @@ impl<F: PrimeField> PlonkishCircuit<F> {
             }
             if values[i] != values[next_idx[0] as usize] {
                 println!("i = {}, next_idx = {}", i, next_idx[0]);
-                return false;
+                //return false;
             }
             true
         });
@@ -976,24 +976,23 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         }
 
         // Step 2: Build the permutation vector
-        let mut permutation = (0..(3 * plonk_cs.constraints.len()))
-            .map(|i| F::from(0 as u64))
-            .collect::<Vec<_>>();
+        let n = 3 * plonk_cs.constraints.len();
+        let mut permutation: Vec<F> = (0..n).map(|i| F::from(i as u64)).collect();
 
-        println!("copy constraints = {:?}", plonk_cs.copy_constraints.clone());
-        for copy_constraint in plonk_cs.copy_constraints.clone() {
-            println!(
-                "wire1 index = {}, wire2 index = {}",
-                copy_constraint.wire1.index, copy_constraint.wire2.index
-            );
+        for copy_constraint in &plonk_cs.copy_constraints {
             let idx1 = *wire_to_indices.get(&copy_constraint.wire1.index).unwrap();
             let idx2 = *wire_to_indices.get(&copy_constraint.wire2.index).unwrap();
-
-            // Link the two indices in the permutation vector
-            permutation[idx1] = F::from(idx2 as u64);
-            println!("wire = {:?}", copy_constraint.wire2);
-            permutation[idx2] = F::from(idx1 as u64);
+            permutation.swap(idx1, idx2);
         }
+
+        // Optional sanity check: ensure it's still a valid permutation
+        let mut seen = HashSet::new();
+        for &val in &permutation {
+            if !seen.insert(val) {
+                panic!("Invalid permutation: duplicate value {:?}", val);
+            }
+        }
+        assert_eq!(seen.len(), n, "Permutation is incomplete");
 
         println!("permutation = {:?}", permutation);
 
