@@ -22,15 +22,27 @@ use std::iter::ExactSizeIterator;
 use std::rc::Rc;
 
 /// Plonk wire representation
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Wire {
-    pub id: usize,
+    pub index: usize,
     pub name: String,
+    ty: WireType,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum WireType {
+    Public,
+    Private,
+    Intermediate,
 }
 
 impl Wire {
-    fn new(id: usize, name: String) -> Self {
-        Self { id, name }
+    fn new(index: usize, name: String) -> Self {
+        Self {
+            index,
+            name,
+            ty: WireType::Intermediate,
+        }
     }
 }
 
@@ -204,30 +216,6 @@ impl<'cfg> ToPlonk<'cfg> {
     /// Create a Plonk constraint: q_l * a + q_r * b + q_o * c + q_m * a * b + q_c = 0
     fn constraint(
         &mut self,
-        q_l: isize,
-        q_r: isize,
-        q_o: isize,
-        q_m: isize,
-        q_c: isize,
-        a: Wire,
-        b: Wire,
-        c: Wire,
-    ) {
-        let constraint = PlonkConstraint {
-            q_l: self.field.new_v(q_l),
-            q_r: self.field.new_v(q_r),
-            q_o: self.field.new_v(q_o),
-            q_m: self.field.new_v(q_m),
-            q_c: self.field.new_v(q_c),
-            a,
-            b,
-            c,
-        };
-        self.plonk.add_constraint(constraint);
-    }
-
-    fn constraint_f(
-        &mut self,
         q_l: FieldV,
         q_r: FieldV,
         q_o: FieldV,
@@ -255,11 +243,11 @@ impl<'cfg> ToPlonk<'cfg> {
         // x * (x - 1) = 0  =>  x * x - x = 0  =>  q_m * a * b + q_l * a = 0
         // where a = b = x, so q_m = 1, q_l = -1
         self.constraint(
-            -1,
-            0,
-            0,
-            1,
-            0, // q_l=-1, q_r=0, q_o=0, q_m=1, q_c=0
+            self.field.new_v(-1),
+            self.field.new_v(0),
+            self.field.new_v(0),
+            self.field.new_v(1),
+            self.field.new_v(0), // q_l=-1, q_r=0, q_o=0, q_m=1, q_c=0
             b.clone(),
             b.clone(),
             self.zero.clone(),
@@ -294,11 +282,11 @@ impl<'cfg> ToPlonk<'cfg> {
 
         // a + b - result = 0  =>  q_l * a + q_r * b + q_o * result = 0
         self.constraint(
-            1,
-            1,
-            -1,
-            0,
-            0, // q_l=1, q_r=1, q_o=-1, q_m=0, q_c=0
+            self.field.new_v(1),
+            self.field.new_v(1),
+            self.field.new_v(-1),
+            self.field.new_v(0),
+            self.field.new_v(0), // q_l=1, q_r=1, q_o=-1, q_m=0, q_c=0
             a,
             b,
             result.clone(),
@@ -316,11 +304,11 @@ impl<'cfg> ToPlonk<'cfg> {
 
         // a - b - result = 0  =>  q_l * a + q_r * (-b) + q_o * result = 0
         self.constraint(
-            1,
-            -1,
-            -1,
-            0,
-            0, // q_l=1, q_r=-1, q_o=-1, q_m=0, q_c=0
+            self.field.new_v(1),
+            self.field.new_v(-1),
+            self.field.new_v(-1),
+            self.field.new_v(0),
+            self.field.new_v(0), // q_l=1, q_r=-1, q_o=-1, q_m=0, q_c=0
             a,
             b,
             result.clone(),
@@ -338,11 +326,11 @@ impl<'cfg> ToPlonk<'cfg> {
 
         // a * b - result = 0  =>  q_m * a * b + q_o * result = 0
         self.constraint(
-            0,
-            0,
-            -1,
-            1,
-            0, // q_l=0, q_r=0, q_o=-1, q_m=1, q_c=0
+            self.field.new_v(0),
+            self.field.new_v(0),
+            self.field.new_v(-1),
+            self.field.new_v(1),
+            self.field.new_v(0), // q_l=0, q_r=0, q_o=-1, q_m=1, q_c=0
             a,
             b,
             result.clone(),
@@ -351,17 +339,17 @@ impl<'cfg> ToPlonk<'cfg> {
     }
 
     /// Add a constant to a wire
-    fn add_const(&mut self, a: Wire, c: isize) -> Wire {
-        let const_term = term![Op::Const(Box::new(Value::Field(self.field.new_v(c))))];
+    fn add_const(&mut self, a: Wire, c: FieldV) -> Wire {
+        let const_term = term![Op::Const(Box::new(Value::Field(c.clone())))];
         let sum_term = term![PF_ADD; self.plonk.wire_values[&a].clone(), const_term];
         let result = self.fresh_wit("add_const", sum_term);
 
         // a + c - result = 0  =>  q_l * a + q_o * result + q_c = 0
         self.constraint(
-            1,
-            0,
-            -1,
-            0,
+            self.field.new_v(1),
+            self.field.new_v(0),
+            self.field.new_v(-1),
+            self.field.new_v(0),
             c, // q_l=1, q_r=0, q_o=-1, q_m=0, q_c=c
             a,
             self.zero.clone(),
@@ -371,18 +359,18 @@ impl<'cfg> ToPlonk<'cfg> {
     }
 
     /// Multiply a wire by a constant
-    fn mul_const(&mut self, a: Wire, c: isize) -> Wire {
-        let const_term = term![Op::Const(Box::new(Value::Field(self.field.new_v(c))))];
+    fn mul_const(&mut self, a: Wire, c: FieldV) -> Wire {
+        let const_term = term![Op::Const(Box::new(Value::Field(c.clone())))];
         let mul_term = term![PF_MUL; self.plonk.wire_values[&a].clone(), const_term];
         let result = self.fresh_wit("mul_const", mul_term);
 
         // c * a - result = 0  =>  q_l * (c * a) + q_o * result = 0
         self.constraint(
             c,
-            0,
-            -1,
-            0,
-            0, // q_l=c, q_r=0, q_o=-1, q_m=0, q_c=0
+            self.field.new_v(0),
+            self.field.new_v(-1),
+            self.field.new_v(0),
+            self.field.new_v(0), // q_l=c, q_r=0, q_o=-1, q_m=0, q_c=0
             a,
             self.zero.clone(),
             result.clone(),
@@ -396,7 +384,7 @@ impl<'cfg> ToPlonk<'cfg> {
         let result = self.fresh_wit("mul_const", mul_term);
 
         // c * a - result = 0  =>  q_l * (c * a) + q_o * result = 0
-        self.constraint_f(
+        self.constraint(
             c,
             self.field.new_v(0),
             self.field.new_v(-1),
@@ -413,11 +401,11 @@ impl<'cfg> ToPlonk<'cfg> {
     fn assert_zero(&mut self, a: Wire) {
         // a = 0  =>  q_l * a = 0
         self.constraint(
-            1,
-            0,
-            0,
-            0,
-            0, // q_l=1, q_r=0, q_o=0, q_m=0, q_c=0
+            self.field.new_v(1),
+            self.field.new_v(0),
+            self.field.new_v(0),
+            self.field.new_v(0),
+            self.field.new_v(0), // q_l=1, q_r=0, q_o=0, q_m=0, q_c=0
             a,
             self.zero.clone(),
             self.zero.clone(),
@@ -451,7 +439,7 @@ impl<'cfg> ToPlonk<'cfg> {
         // m * x + is_zero - 1 = 0
         let temp = self.mul(m, x.clone());
         let temp2 = self.add(temp, is_zero.clone());
-        let temp3 = self.add_const(temp2, -1);
+        let temp3 = self.add_const(temp2, self.field.new_v(-1));
         self.assert_zero(temp3);
 
         // is_zero * x = 0
@@ -533,7 +521,7 @@ impl<'cfg> ToPlonk<'cfg> {
                 // XOR: a + b - 2*a*b
                 let sum = self.add(a.clone(), b.clone());
                 let product = self.mul(a, b);
-                let double_product = self.mul_const(product, 2);
+                let double_product = self.mul_const(product, self.field.new_v(2));
                 self.sub(sum, double_product)
             })
         }
@@ -638,11 +626,11 @@ impl<'cfg> ToPlonk<'cfg> {
 
         // a * b - result = 0  =>  q_m * a * b + q_o * result = 0
         self.constraint(
-            0,
-            0,
-            -1,
-            1,
-            0, // q_l=0, q_r=0, q_o=-1, q_m=1, q_c=0
+            self.field.new_v(0),
+            self.field.new_v(0),
+            self.field.new_v(-1),
+            self.field.new_v(1),
+            self.field.new_v(0), // q_l=0, q_r=0, q_o=-1, q_m=1, q_c=0
             a,
             b,
             result.clone(),
@@ -660,11 +648,11 @@ impl<'cfg> ToPlonk<'cfg> {
 
         // a + b - a*b - result = 0  =>  q_l * a + q_r * b + q_m * (-a) * b + q_o * result = 0
         self.constraint(
-            1,
-            1,
-            -1,
-            -1,
-            0, // q_l=1, q_r=1, q_o=-1, q_m=-1, q_c=0
+            self.field.new_v(1),
+            self.field.new_v(1),
+            self.field.new_v(-1),
+            self.field.new_v(-1),
+            self.field.new_v(0), // q_l=1, q_r=1, q_o=-1, q_m=-1, q_c=0
             a,
             b,
             result.clone(),
@@ -685,11 +673,11 @@ impl<'cfg> ToPlonk<'cfg> {
 
         // a + b - 2*a*b - result = 0  =>  q_l * a + q_r * b + q_m * (-2) * a * b + q_o * result = 0
         self.constraint(
-            1,
-            1,
-            -1,
-            -2,
-            0, // q_l=1, q_r=1, q_o=-1, q_m=-2, q_c=0
+            self.field.new_v(1),
+            self.field.new_v(1),
+            self.field.new_v(-1),
+            self.field.new_v(-2),
+            self.field.new_v(0), // q_l=1, q_r=1, q_o=-1, q_m=-2, q_c=0
             a,
             b,
             result.clone(),
@@ -844,7 +832,7 @@ impl<'cfg> ToPlonk<'cfg> {
                     // m = i + c(b + a - 2i)
                     let ab = self.mul(a.clone(), b.clone());
                     let sum_ab = self.add(a, b);
-                    let double_ab = self.mul_const(ab.clone(), 2);
+                    let double_ab = self.mul_const(ab.clone(), self.field.new_v(2));
                     let inner = self.sub(sum_ab, double_ab);
                     let c_inner = self.mul(c_val, inner);
                     self.add(ab, c_inner)
@@ -1482,7 +1470,7 @@ impl<'cfg> ToPlonk<'cfg> {
 
     #[allow(dead_code)]
     fn debug_wire<D: Display + ?Sized>(&self, tag: &D, wire: &Wire) {
-        println!("{}: wire_{} ({})", tag, wire.id, wire.name);
+        println!("{}: wire_{} ({})", tag, wire.index, wire.name);
     }
 
     fn get_bv_lit(&self, t: &Term) -> Rc<RefCell<BvEntry>> {
@@ -1539,7 +1527,7 @@ impl<'cfg> ToPlonk<'cfg> {
                 Op::UbvToPf(_) => self.get_bv_uint(&c.cs()[0]),
                 Op::PfUnOp(PfUnOp::Neg) => {
                     let arg = self.get_pf(&c.cs()[0]).clone();
-                    self.mul_const(arg, -1)
+                    self.mul_const(arg, self.field.new_v(-1))
                 }
                 Op::PfUnOp(PfUnOp::Recip) => {
                     let x = self.get_pf(&c.cs()[0]).clone();
@@ -1588,7 +1576,7 @@ impl<'cfg> ToPlonk<'cfg> {
                             // i * x + z - 1 = 0
                             let ix = self.mul(i.clone(), x.clone());
                             let ix_plus_z = self.add(ix, z.clone());
-                            let constraint1 = self.add_const(ix_plus_z, -1);
+                            let constraint1 = self.add_const(ix_plus_z, self.field.new_v(-1));
                             self.assert_zero(constraint1);
 
                             // z * x = 0

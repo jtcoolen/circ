@@ -925,9 +925,9 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             ));
 
             // Map wire IDs to their positions in the witness table
-            wire_to_indices.insert(constraint.a.id, i * 3);
-            wire_to_indices.insert(constraint.b.id, i * 3 + 1);
-            wire_to_indices.insert(constraint.c.id, i * 3 + 2);
+            wire_to_indices.insert(constraint.a.index, i * 3);
+            wire_to_indices.insert(constraint.b.index, i * 3 + 1);
+            wire_to_indices.insert(constraint.c.index, i * 3 + 2);
         }
 
         // Step 2: Build the permutation vector
@@ -936,8 +936,8 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             .collect::<Vec<_>>();
 
         for copy_constraint in plonk_cs.copy_constraints.clone() {
-            let idx1 = *wire_to_indices.get(&copy_constraint.wire1.id).unwrap();
-            let idx2 = *wire_to_indices.get(&copy_constraint.wire2.id).unwrap();
+            let idx1 = *wire_to_indices.get(&copy_constraint.wire1.index).unwrap();
+            let idx2 = *wire_to_indices.get(&copy_constraint.wire2.index).unwrap();
 
             // Link the two indices in the permutation vector
             permutation[idx1] = F::from(idx2 as u64);
