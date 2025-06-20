@@ -97,6 +97,7 @@ impl PlonkCs {
 
     /// Create a new wire with given name and value
     fn new_wire(&mut self, name: String, value: Term) -> Wire {
+        println!("added wire {} for term {:?}", name, value);
         let wire = Wire::new(self.next_wire_id, name);
         self.next_wire_id += 1;
         self.wire_values.insert(wire.clone(), value);
@@ -114,7 +115,7 @@ impl PlonkCs {
     }
 
     /// Create constant wire (zero)
-    fn zero_wire(&mut self) -> Wire {
+    pub fn zero_wire(&mut self) -> Wire {
         let zero_term = term![Op::Const(Box::new(Value::Field(self.field.new_v(0))))];
         self.new_wire("zero".to_string(), zero_term)
     }
@@ -179,7 +180,9 @@ impl<'cfg> ToPlonk<'cfg> {
     /// Create a committed witness vector. Each input is a (name, term) pair.
     fn committed_wit(&mut self, elements: Vec<(String, Term)>) {
         for (name, value) in elements {
+            println!("name = {}, value = {}", name, value);
             let wire = self.plonk.new_wire(name.clone(), value.clone());
+
             self.plonk.witness.push(wire.clone());
             let var = var(name, check(&value));
             self.embed.borrow_mut().insert(var.clone());
@@ -274,11 +277,19 @@ impl<'cfg> ToPlonk<'cfg> {
 
     /// Add two wires: returns a wire representing a + b
     fn add(&mut self, a: Wire, b: Wire) -> Wire {
+        // Step 1: Create fresh wires in current row to hold a and b
+        let a_new = self.fresh_wit("add.in.0", self.plonk.wire_values[&a].clone());
+        let b_new = self.fresh_wit("add.in.1", self.plonk.wire_values[&b].clone());
+
+        // Step 2: Add copy constraints from original wires
+        self.plonk.add_copy_constraint(a.clone(), a_new.clone());
+        self.plonk.add_copy_constraint(b.clone(), b_new.clone());
+
         let sum_term = term![PF_ADD;
             self.plonk.wire_values[&a].clone(),
             self.plonk.wire_values[&b].clone()
         ];
-        let result = self.fresh_wit("add", sum_term);
+        let result = self.fresh_wit("add.out.0", sum_term);
 
         // a + b - result = 0  =>  q_l * a + q_r * b + q_o * result = 0
         self.constraint(
@@ -287,8 +298,8 @@ impl<'cfg> ToPlonk<'cfg> {
             self.field.new_v(-1),
             self.field.new_v(0),
             self.field.new_v(0), // q_l=1, q_r=1, q_o=-1, q_m=0, q_c=0
-            a,
-            b,
+            a_new,
+            b_new,
             result.clone(),
         );
         result
@@ -1666,14 +1677,23 @@ pub fn to_plonk(cs: &Computation, cfg: &CircCfg) -> PlonkCs {
     //println!("vars.")
     for i in &vars.instances {
         converter.embed_var(i, VarType::Inst);
+        /*let out_wire = converter
+            .plonk
+            .wire_values
+            .iter()
+            .find_map(|(wire, term)| if term == i { Some(wire) } else { None })
+            .expect("output term missing");
+        converter
+            .plonk
+            .add_copy_constraint(out_wire.clone(), out_wire.clone());*/
     }
-    for terms in &vars.committed_wit_vecs {
+    /*for terms in &vars.committed_wit_vecs {
         let names_and_terms = terms
             .iter()
             .map(|t| (t.as_var_name().to_owned(), t.clone()))
             .collect();
         converter.committed_wit(names_and_terms);
-    }
+    }*/
     /*for round in &vars.rounds {
         for w in &round.witnesses {
             converter.embed_var(w, VarType::RoundWit);
@@ -1685,14 +1705,43 @@ pub fn to_plonk(cs: &Computation, cfg: &CircCfg) -> PlonkCs {
         // but we can still process the variables
     }*/
     for w in &vars.final_witnesses {
+        println!("w = {}", w);
         converter.embed_var(w, VarType::FinalWit);
     }
+
+    //for e in converter.plonk.public_inputs {
+    //converter.plonk.add_copy_constraint(e, );
+    //}
+
     debug!("Processing assertions");
     for c in &cs.outputs {
+        println!("output = {:?}", c.cs()[0]);
+        // Lookup wire for output term
+        //let out_wire = converter.plonk.wire_values.iter()
+        //    .find_map(|(wire, term)| if term == &c.cs()[0] { Some(wire) } else { None })
+        //    .expect("output term missing");
+
+        // Add copy constraint between computation result and public output
+        //converter.plonk.add_copy_constraint(out_wire.clone(), out_wire.clone());
         converter.assert(c.clone());
     }
+
+    // No need for copy constraint with output because of output - result = 0 check
+    /*for c in &cs.outputs {
+        println!("output = {:?}", c.cs()[0]);
+        // Lookup wire for output term
+        let out_wire = converter.plonk.wire_values.iter()
+            .find_map(|(wire, term)| if term == &c.cs()[0] { Some(wire) } else { None })
+            .expect("output term missing");
+
+        // Add copy constraint between computation result and public output
+        //converter.plonk.add_copy_constraint(out_wire.clone(), out_wire.clone());
+        //converter.assert(c.clone());
+    }
+    panic!();*/
     //converter.profile_print();
     let mut res = converter.plonk;
+
     res.all_inputs = all_inputs;
     res
 }
