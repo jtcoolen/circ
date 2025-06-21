@@ -847,8 +847,6 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         &self,
         plonk_cs: &PlonkCs,
     ) -> Result<Vec<SelectorColumn<F>>, String> {
-        let num_constraints = plonk_cs.constraints.len();
-
         // Initialize selector columns: [q_L, q_R, q_O, q_M, q_C]
         let mut selector_columns = vec![
             SelectorColumn::default(), // q_L
@@ -857,6 +855,12 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             SelectorColumn::default(), // q_M
             SelectorColumn::default(), // q_C
         ];
+        selector_columns[0].append(F::zero());
+        selector_columns[1].append(F::zero());
+        selector_columns[2].append(F::zero());
+        selector_columns[3].append(F::zero());
+        selector_columns[4].append(F::zero());
+
         selector_columns[0].append(F::zero());
         selector_columns[1].append(F::zero());
         selector_columns[2].append(F::zero());
@@ -926,7 +930,6 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         let mut witness_table = Vec::new();
         let mut wire_to_indices = HashMap::new();
 
-        let mut next_index = 0;
         for copy_constraint in plonk_cs.copy_constraints.clone() {
             let wires = [copy_constraint.wire1.clone(), copy_constraint.wire2.clone()];
             for wire in wires {
@@ -935,8 +938,6 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                 }) {
                     println!("hello wire {:?}", wire);
 
-                    wire_to_indices.insert(wire.index, next_index);
-                    println!("i={}", next_index);
                     let constraint = PlonkConstraint {
                         q_l: plonk_cs.field.new_v(0),
                         q_r: plonk_cs.field.new_v(0),
@@ -947,7 +948,6 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                         b: plonk_cs.zero_wire().clone(),
                         c: plonk_cs.zero_wire().clone(),
                     };
-                    next_index = next_index + 3;
                     println!("incr");
                     plonk_cs.constraints.insert(0, constraint);
                 }
@@ -963,12 +963,12 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             ));
 
             // Map wire IDs to their positions in the witness table
-            wire_to_indices.insert(constraint.a.index, next_index + i * 3);
-            wire_to_indices.insert(constraint.b.index, next_index + i * 3 + 1);
-            wire_to_indices.insert(constraint.c.index, next_index + i * 3 + 2);
-            println!("i={}", next_index + i * 3);
-            println!("i={}", next_index + i * 3 + 1);
-            println!("i={}", next_index + i * 3 + 2);
+            wire_to_indices.insert(constraint.a.index, i * 3);
+            wire_to_indices.insert(constraint.b.index, i * 3 + 1);
+            wire_to_indices.insert(constraint.c.index, i * 3 + 2);
+            println!("i={}", i * 3);
+            println!("i={}", i * 3 + 1);
+            println!("i={}", i * 3 + 2);
             println!(
                 "inserted wires indices {}, {}, {}",
                 constraint.a.index, constraint.b.index, constraint.c.index
@@ -977,8 +977,10 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
 
         // Step 2: Build the permutation vector
         let n = 3 * plonk_cs.constraints.len();
+        println!("perm len = {}", n);
         let mut permutation: Vec<F> = (0..n).map(|i| F::from(i as u64)).collect();
 
+        println!("copy constraints = {:?}", plonk_cs.copy_constraints);
         for copy_constraint in &plonk_cs.copy_constraints {
             let idx1 = *wire_to_indices.get(&copy_constraint.wire1.index).unwrap();
             let idx2 = *wire_to_indices.get(&copy_constraint.wire2.index).unwrap();

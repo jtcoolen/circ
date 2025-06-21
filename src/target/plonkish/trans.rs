@@ -307,11 +307,19 @@ impl<'cfg> ToPlonk<'cfg> {
 
     /// Subtract two wires: returns a wire representing a - b  
     fn sub(&mut self, a: Wire, b: Wire) -> Wire {
+        // Step 1: Create fresh wires in current row to hold a and b
+        let a_new = self.fresh_wit("sub.in.0", self.plonk.wire_values[&a].clone());
+        let b_new = self.fresh_wit("sub.in.1", self.plonk.wire_values[&b].clone());
+
+        // Step 2: Add copy constraints from original wires
+        self.plonk.add_copy_constraint(a.clone(), a_new.clone());
+        self.plonk.add_copy_constraint(b.clone(), b_new.clone());
+
         let diff_term = term![PF_ADD;
             self.plonk.wire_values[&a].clone(),
             term![PF_NEG; self.plonk.wire_values[&b].clone()]
         ];
-        let result = self.fresh_wit("sub", diff_term);
+        let result = self.fresh_wit("sub.out.0", diff_term);
 
         // a - b - result = 0  =>  q_l * a + q_r * (-b) + q_o * result = 0
         self.constraint(
@@ -320,8 +328,8 @@ impl<'cfg> ToPlonk<'cfg> {
             self.field.new_v(-1),
             self.field.new_v(0),
             self.field.new_v(0), // q_l=1, q_r=-1, q_o=-1, q_m=0, q_c=0
-            a,
-            b,
+            a_new,
+            b_new,
             result.clone(),
         );
         result
