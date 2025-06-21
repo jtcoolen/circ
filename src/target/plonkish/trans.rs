@@ -337,11 +337,20 @@ impl<'cfg> ToPlonk<'cfg> {
 
     /// Multiply two wires: returns a wire representing a * b
     fn mul(&mut self, a: Wire, b: Wire) -> Wire {
+        // Step 1: Create fresh wires in current row to hold a and b
+        let a_new = self.fresh_wit("mul.in.0", self.plonk.wire_values[&a].clone());
+        let b_new = self.fresh_wit("mul.in.1", self.plonk.wire_values[&b].clone());
+
+        // Step 2: Add copy constraints from original wires
+        self.plonk.add_copy_constraint(a.clone(), a_new.clone());
+        self.plonk.add_copy_constraint(b.clone(), b_new.clone());
+
+
         let mul_term = term![PF_MUL;
             self.plonk.wire_values[&a].clone(),
             self.plonk.wire_values[&b].clone()
         ];
-        let result = self.fresh_wit("mul", mul_term);
+        let result = self.fresh_wit("mul.out.0", mul_term);
 
         // a * b - result = 0  =>  q_m * a * b + q_o * result = 0
         self.constraint(
@@ -350,8 +359,8 @@ impl<'cfg> ToPlonk<'cfg> {
             self.field.new_v(-1),
             self.field.new_v(1),
             self.field.new_v(0), // q_l=0, q_r=0, q_o=-1, q_m=1, q_c=0
-            a,
-            b,
+            a_new,
+            b_new,
             result.clone(),
         );
         result
