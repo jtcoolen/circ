@@ -345,7 +345,6 @@ impl<'cfg> ToPlonk<'cfg> {
         self.plonk.add_copy_constraint(a.clone(), a_new.clone());
         self.plonk.add_copy_constraint(b.clone(), b_new.clone());
 
-
         let mul_term = term![PF_MUL;
             self.plonk.wire_values[&a].clone(),
             self.plonk.wire_values[&b].clone()
@@ -388,9 +387,15 @@ impl<'cfg> ToPlonk<'cfg> {
 
     /// Multiply a wire by a constant
     fn mul_const(&mut self, a: Wire, c: FieldV) -> Wire {
+        // Step 1: Create fresh wires in current row to hold a and b
+        let a_new = self.fresh_wit("mul_const.in.0", self.plonk.wire_values[&a].clone());
+
+        // Step 2: Add copy constraints from original wires
+        self.plonk.add_copy_constraint(a.clone(), a_new.clone());
+
         let const_term = term![Op::Const(Box::new(Value::Field(c.clone())))];
         let mul_term = term![PF_MUL; self.plonk.wire_values[&a].clone(), const_term];
-        let result = self.fresh_wit("mul_const", mul_term);
+        let result = self.fresh_wit("mul.out.0", mul_term);
 
         // c * a - result = 0  =>  q_l * (c * a) + q_o * result = 0
         self.constraint(
@@ -399,26 +404,7 @@ impl<'cfg> ToPlonk<'cfg> {
             self.field.new_v(-1),
             self.field.new_v(0),
             self.field.new_v(0), // q_l=c, q_r=0, q_o=-1, q_m=0, q_c=0
-            a,
-            self.zero.clone(),
-            result.clone(),
-        );
-        result
-    }
-
-    fn mul_const_f(&mut self, a: Wire, c: FieldV) -> Wire {
-        let const_term = term![Op::Const(Box::new(Value::Field(c.clone())))];
-        let mul_term = term![PF_MUL; self.plonk.wire_values[&a].clone(), const_term];
-        let result = self.fresh_wit("mul_const", mul_term);
-
-        // c * a - result = 0  =>  q_l * (c * a) + q_o * result = 0
-        self.constraint(
-            c,
-            self.field.new_v(0),
-            self.field.new_v(-1),
-            self.field.new_v(0),
-            self.field.new_v(0), // q_l=c, q_r=0, q_o=-1, q_m=0, q_c=0
-            a,
+            a_new,
             self.zero.clone(),
             result.clone(),
         );
@@ -525,7 +511,7 @@ impl<'cfg> ToPlonk<'cfg> {
                 acc.clone()
             };
 
-            let scaled_bit = self.mul_const_f(bit, coeff);
+            let scaled_bit = self.mul_const(bit, coeff);
             result = self.add(result, scaled_bit);
 
             acc *= &self.field.new_v(2u8);
@@ -1038,8 +1024,9 @@ impl<'cfg> ToPlonk<'cfg> {
 
     /// Create a constant wire
     fn const_wire(&mut self, value: FieldV) -> Wire {
-        let const_term = term![Op::Const(Box::new(Value::Field(value)))];
-        self.plonk.new_wire("const".to_string(), const_term)
+        let const_term = term![Op::Const(Box::new(Value::Field(value.clone())))];
+        println!("value {:?}", value);
+        self.plonk.new_wire("const_".to_string(), const_term)
     }
 
     /// Get boolean wire from term
@@ -1525,7 +1512,20 @@ impl<'cfg> ToPlonk<'cfg> {
                 Op::Const(v) => {
                     let field_val = v.as_pf().as_ty_ref(&self.field);
                     let const_term = term![Op::Const(Box::new(Value::Field(field_val.clone())))];
-                    self.plonk.new_wire("const".to_string(), const_term)
+                    println!("const {:?}", field_val);
+                    let result = self.fresh_wit("const.out.0", const_term);
+                    self.constraint(
+                        self.field.zero(),
+                        self.field.zero(),
+                        self.field.new_v(-1),
+                        self.field.zero(),
+                        field_val,
+                        self.zero.clone(),
+                        self.zero.clone(),
+                        result.clone(),
+                    );
+                    //self.plonk.new_wire("const".to_string(), const_term)
+                    result
                 }
                 Op::Ite => {
                     let cond = self.get_bool(&c.cs()[0]).clone();
