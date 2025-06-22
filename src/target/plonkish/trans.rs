@@ -44,6 +44,10 @@ impl Wire {
             ty: WireType::Intermediate,
         }
     }
+
+    fn new_ty(index: usize, name: String, ty: WireType) -> Self {
+        Self { index, name, ty }
+    }
 }
 
 /// Plonk constraint: q_l * a + q_r * b + q_o * c + q_m * a * b + q_c = 0
@@ -97,8 +101,16 @@ impl PlonkCs {
 
     /// Create a new wire with given name and value
     fn new_wire(&mut self, name: String, value: Term) -> Wire {
-        println!("added wire {} for term {:?}", name, value);
+        //println!("added wire {} for term {:?}", name, value);
         let wire = Wire::new(self.next_wire_id, name);
+        self.next_wire_id += 1;
+        self.wire_values.insert(wire.clone(), value);
+        wire
+    }
+
+    fn new_wire_ty(&mut self, name: String, value: Term) -> Wire {
+        //println!("added wire {} for term {:?}", name, value);
+        let wire = Wire::new_ty(self.next_wire_id, name, WireType::Public);
         self.next_wire_id += 1;
         self.wire_values.insert(wire.clone(), value);
         wire
@@ -180,7 +192,7 @@ impl<'cfg> ToPlonk<'cfg> {
     /// Create a committed witness vector. Each input is a (name, term) pair.
     fn committed_wit(&mut self, elements: Vec<(String, Term)>) {
         for (name, value) in elements {
-            println!("name = {}, value = {}", name, value);
+            //println!("name = {}, value = {}", name, value);
             let wire = self.plonk.new_wire(name.clone(), value.clone());
 
             self.plonk.witness.push(wire.clone());
@@ -197,10 +209,10 @@ impl<'cfg> ToPlonk<'cfg> {
         } else {
             format!("{ctx}_n{}", self.next_idx)
         };
-        println!("name {}", n);
+        //println!("name {}", n);
         self.next_idx += 1;
         debug_assert!(matches!(check(&comp), Sort::Field(_)));
-        let wire = self.plonk.new_wire(n.clone(), comp);
+        let wire = self.plonk.new_wire_ty(n.clone(), comp);
 
         match ty {
             VarType::Inst => self.plonk.public_inputs.push(wire.clone()),
@@ -259,7 +271,7 @@ impl<'cfg> ToPlonk<'cfg> {
 
     /// Get a new bit-valued variable
     fn fresh_bit<D: Display + ?Sized>(&mut self, ctx: &D, comp: Term) -> Wire {
-        println!("check({}) = {}", ctx, check(&comp));
+        //println!("check({}) = {}", ctx, check(&comp));
         debug_assert!(matches!(check(&comp), Sort::Bool));
         let comp = term![Op::Ite; comp, self.one_term(), self.zero_term()];
         let v = self.fresh_var(ctx, comp, VarType::FinalWit);
@@ -432,7 +444,7 @@ impl<'cfg> ToPlonk<'cfg> {
     }
 
     /// Return a bit indicating whether wire `x` is non-zero.
-    fn is_zero(&mut self, x: Wire) -> Wire {
+    /*fn is_zero(&mut self, x: Wire) -> Wire {
         let eqz = term![Op::Eq;
             self.plonk.wire_values[&x].clone(),
             self.zero_term()
@@ -442,7 +454,7 @@ impl<'cfg> ToPlonk<'cfg> {
         // is_zero * x == 0
         let m = self.fresh_wit(
             "is_zero_inv",
-            term![Op::Ite; eqz.clone(), self.zero_term(), 
+            term![Op::Ite; eqz.clone(), self.zero_term(),
                   term![PF_RECIP; self.plonk.wire_values[&x].clone()]],
         );
         let is_zero = self.fresh_wit(
@@ -459,6 +471,72 @@ impl<'cfg> ToPlonk<'cfg> {
         // is_zero * x = 0
         let temp4 = self.mul(is_zero.clone(), x);
         self.assert_zero(temp4);
+
+        is_zero
+    }*/
+    fn is_zero(&mut self, x: Wire) -> Wire {
+        let eqz = term![Op::Eq;
+            self.plonk.wire_values[&x].clone(),
+            self.zero_term()
+        ];
+
+        // Generate witness values
+        let m = self.fresh_wit(
+            "is_zero_inv",
+            term![Op::Ite; eqz.clone(), self.zero_term(), 
+                  term![PF_RECIP; self.plonk.wire_values[&x].clone()]],
+        );
+        let is_zero = self.fresh_wit(
+            "is_zero",
+            term![Op::Ite; eqz, self.one_term(), self.zero_term()],
+        );
+
+        // Create fresh wires for current constraint row
+        let x_copy = self.fresh_wit("is_zero_x", self.plonk.wire_values[&x].clone());
+        //let m_copy = self.fresh_wit("is_zero_m", self.plonk.wire_values[&m].clone());
+        //let is_zero_copy = self.fresh_wit("is_zero_result", self.plonk.wire_values[&is_zero].clone());
+
+        // Add copy constraints
+        self.plonk.add_copy_constraint(x.clone(), x_copy.clone());
+        //self.plonk.add_copy_constraint(m.clone(), m_copy.clone());
+        //self.plonk.add_copy_constraint(is_zero.clone(), is_zero_copy.clone());
+
+        // Constraint 1: m * x + is_zero - 1 = 0
+        // This becomes: q_m * m * x + q_o * is_zero + q_c = 0
+        // So: q_m = 1, q_o = 1, q_c = -1
+        self.constraint(
+            self.field.new_v(0),  // q_l = 0
+            self.field.new_v(0),  // q_r = 0
+            self.field.new_v(1),  // q_o = 1 (for is_zero)
+            self.field.new_v(1),  // q_m = 1 (for m * x)
+            self.field.new_v(-1), // q_c = -1 (constant term)
+            m.clone(),            // left wire (m)
+            x_copy.clone(),       // right wire (x)
+            is_zero.clone(),      // output wire (is_zero)
+        );
+
+        // Constraint 2: is_zero * x = 0
+        // This becomes: q_m * is_zero * x = 0
+        // So: q_m = 1, all others = 0
+        let x_copy2 = self.fresh_wit("is_zero_x2", self.plonk.wire_values[&x].clone());
+        let is_zero_copy2 =
+            self.fresh_wit("is_zero_result2", self.plonk.wire_values[&is_zero].clone());
+        let zero_wire = self.fresh_wit("zero_result", self.zero_term());
+
+        self.plonk.add_copy_constraint(x.clone(), x_copy2.clone());
+        self.plonk
+            .add_copy_constraint(is_zero.clone(), is_zero_copy2.clone());
+
+        self.constraint(
+            self.field.new_v(0), // q_l = 0
+            self.field.new_v(0), // q_r = 0
+            self.field.new_v(0), // q_o = 0
+            self.field.new_v(1), // q_m = 1 (for is_zero * x)
+            self.field.new_v(0), // q_c = 0
+            is_zero_copy2,       // left wire (is_zero)
+            x_copy2,             // right wire (x)
+            zero_wire,           // output wire (should be 0)
+        );
 
         is_zero
     }
@@ -1025,8 +1103,18 @@ impl<'cfg> ToPlonk<'cfg> {
     /// Create a constant wire
     fn const_wire(&mut self, value: FieldV) -> Wire {
         let const_term = term![Op::Const(Box::new(Value::Field(value.clone())))];
-        println!("value {:?}", value);
-        self.plonk.new_wire("const_".to_string(), const_term)
+        let c = self.plonk.new_wire("const".to_string(), const_term);
+        self.constraint(
+            self.field.new_v(0),
+            self.field.new_v(0),
+            self.field.new_v(-1),
+            self.field.new_v(0),
+            value,
+            self.zero.clone(),
+            self.zero.clone(),
+            c.clone(),
+        );
+        c
     }
 
     /// Get boolean wire from term
@@ -1197,7 +1285,9 @@ impl<'cfg> ToPlonk<'cfg> {
                                 let bit_term = term![Op::Const(Box::new(Value::Field(
                                     self.field.new_v(bit_val)
                                 )))];
-                                self.plonk.new_wire(format!("const_bit_{}", i), bit_term)
+                                let w = self.plonk.new_wire(format!("const_bit_{}", i), bit_term);
+                                self.add_const(w.clone(), self.field.new_v(bit_val));
+                                w
                             })
                             .collect();
                         self.set_bv_bits(bv.clone(), bit_wires);
@@ -1344,7 +1434,7 @@ impl<'cfg> ToPlonk<'cfg> {
                                 self.set_bv_bits(bv, bits);
                             }
                             BvBinOp::Udiv | BvBinOp::Urem => {
-                                // Division requires witness generation
+                                /*// Division requires witness generation
                                 let a_bv_term =
                                     term![Op::PfToBv(n); self.plonk.wire_values[&a].clone()];
                                 let b_bv_term =
@@ -1379,6 +1469,84 @@ impl<'cfg> ToPlonk<'cfg> {
                                 // So: r_geq_b * q_not_equals_max = 0
                                 let and_product = self.mul(r_ge_b, q_not_equals_max);
                                 self.assert_zero(and_product.clone());
+
+                                let bits = match o {
+                                    BvBinOp::Udiv => qb,
+                                    BvBinOp::Urem => rb,
+                                    _ => unreachable!(),
+                                };
+                                self.set_bv_bits(bv, bits);*/
+
+                                // Division requires witness generation
+                                let a_bv_term =
+                                    term![Op::PfToBv(n); self.plonk.wire_values[&a].clone()];
+                                let b_bv_term =
+                                    term![Op::PfToBv(n); self.plonk.wire_values[&b].clone()];
+                                let q_term = term![Op::new_ubv_to_pf(self.field.clone()); term![BV_UDIV; a_bv_term.clone(), b_bv_term.clone()]];
+                                let r_term = term![Op::new_ubv_to_pf(self.field.clone()); term![BV_UREM; a_bv_term, b_bv_term]];
+
+                                let q = self.fresh_wit("div_q", q_term);
+                                let r = self.fresh_wit("div_r", r_term);
+
+                                // OPTION 2A: Direct constraint in one row
+                                // Constraint: a = q * b + r  =>  q_l * a + q_m * q * b + q_r * r = 0
+                                let a_copy =
+                                    self.fresh_wit("div_a", self.plonk.wire_values[&a].clone());
+                                let b_copy =
+                                    self.fresh_wit("div_b", self.plonk.wire_values[&b].clone());
+                                let qb_result = self.fresh_wit("div_qb", term![PF_MUL; self.plonk.wire_values[&q].clone(), self.plonk.wire_values[&b].clone()]);
+
+                                self.plonk.add_copy_constraint(a.clone(), a_copy.clone());
+                                self.plonk.add_copy_constraint(b.clone(), b_copy.clone());
+
+                                // Row 1: q * b = qb_result
+                                self.constraint(
+                                    self.field.new_v(0),  // q_l
+                                    self.field.new_v(0),  // q_r
+                                    self.field.new_v(-1), // q_o
+                                    self.field.new_v(1),  // q_m
+                                    self.field.new_v(0),  // q_c
+                                    q.clone(),
+                                    b_copy,
+                                    qb_result.clone(),
+                                );
+
+                                // Row 2: a - (qb_result + r) = 0  =>  a - qb_result - r = 0
+                                let qb_copy = self.fresh_wit(
+                                    "div_qb_copy",
+                                    self.plonk.wire_values[&qb_result].clone(),
+                                );
+
+                                self.plonk.add_copy_constraint(qb_result, qb_copy.clone());
+
+                                self.constraint(
+                                    self.field.new_v(1),  // q_l = 1 (for a_copy)
+                                    self.field.new_v(-1), // q_r = -1 (for qb_copy)
+                                    self.field.new_v(-1), // q_o = -1 (for r_copy)
+                                    self.field.new_v(0),  // q_m
+                                    self.field.new_v(0),  // q_c
+                                    a_copy,
+                                    qb_copy,
+                                    r.clone(),
+                                );
+
+                                // Continue with bitification and remainder constraints...
+                                let qb = self.bitify("div_q", &q, n, false);
+                                let rb = self.bitify("div_r", &r, n, false);
+
+                                // Division by zero and remainder constraints
+                                let r_ge_b = self.bv_greater(r.clone(), b.clone(), n, false);
+                                let max_val = self.field.new_v((Integer::from(1) << 254) - 1);
+                                let max_wire = self.const_wire(max_val);
+
+                                let sub_wire = self.sub(q.clone(), max_wire);
+                                let q_eq_max = self.is_zero(sub_wire);
+
+                                let q_not_equals_max =
+                                    self.add_const(q_eq_max, self.field.new_v(-1));
+
+                                let and_product = self.mul(r_ge_b, q_not_equals_max);
+                                self.assert_zero(and_product);
 
                                 let bits = match o {
                                     BvBinOp::Udiv => qb,
@@ -1512,7 +1680,7 @@ impl<'cfg> ToPlonk<'cfg> {
                 Op::Const(v) => {
                     let field_val = v.as_pf().as_ty_ref(&self.field);
                     let const_term = term![Op::Const(Box::new(Value::Field(field_val.clone())))];
-                    println!("const {:?}", field_val);
+                    //println!("const {:?}", field_val);
                     let result = self.fresh_wit("const.out.0", const_term);
                     self.constraint(
                         self.field.zero(),
@@ -1722,7 +1890,7 @@ pub fn to_plonk(cs: &Computation, cfg: &CircCfg) -> PlonkCs {
         // but we can still process the variables
     }*/
     for w in &vars.final_witnesses {
-        println!("w = {}", w);
+        //println!("w = {}", w);
         converter.embed_var(w, VarType::FinalWit);
     }
 
@@ -1732,7 +1900,7 @@ pub fn to_plonk(cs: &Computation, cfg: &CircCfg) -> PlonkCs {
 
     debug!("Processing assertions");
     for c in &cs.outputs {
-        println!("output = {:?}", c.cs()[0]);
+        //println!("output = {:?}", c.cs()[0]);
         // Lookup wire for output term
         //let out_wire = converter.plonk.wire_values.iter()
         //    .find_map(|(wire, term)| if term == &c.cs()[0] { Some(wire) } else { None })

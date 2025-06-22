@@ -17,6 +17,7 @@ use circ::ir::term::{Op, Term};
 use circ::target::r1cs::wit_comp;
 use circ_fields::FullFieldV::FBls12381;
 use fxhash::FxHashMap;
+use rsmt2::print;
 use rug::Integer;
 
 /*
@@ -655,7 +656,7 @@ pub struct PlonkishCircuit<F: PrimeField> {
 
 impl<F: PrimeField> PlonkishCircuit<F> {
     fn witness_row(&self, values: &[F], idx: usize) -> Vec<F> {
-        println!("n cst = {}", self.params.num_constraints);
+        //println!("n cst = {}", self.params.num_constraints);
         let mut witness_values = vec![F::zero(); self.params.gate_func.num_witness_columns()];
         for i in 0..witness_values.len() {
             witness_values[i] = values[i * self.params.num_constraints + idx];
@@ -700,7 +701,7 @@ impl<F: PrimeField> PlonkishCircuit<F> {
                 //return false;
             }
             if values[i] != values[next_idx[0] as usize] {
-                println!("i = {}, next_idx = {}", i, next_idx[0]);
+                //println!("i = {}, next_idx = {}", i, next_idx[0]);
                 //return false;
             }
             true
@@ -738,7 +739,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             })
             .collect::<FxHashMap<_, _>>();
         println!("public inputs = {:?}", plonk_cs.public_inputs);
-        println!("wits = {:?}", plonk_cs.witness);
+        //println!("wits = {:?}", plonk_cs.witness);
         let mut rng = rand::thread_rng();
         let input_names = plonk_cs.all_inputs.clone();
         let mut inputs = FxHashMap::<String, Value>::default();
@@ -775,26 +776,36 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
     pub fn convert(&mut self) -> Result<PlonkishCircuit<F>, String> {
         // Step 1: Build wire index mapping
         let mut plonk_cs_clone = self.plonk_cs.clone();
-        self.build_wire_mapping(&plonk_cs_clone)?;
+
+        println!("cst 1 {}", plonk_cs_clone.constraints.len());
 
         // Step 2: Create selector columns from constraints
         let selector_columns = self.create_selector_columns(&mut plonk_cs_clone)?;
 
+        println!("cst 2 {}", plonk_cs_clone.constraints.len());
         println!("sel col len = {}", selector_columns.get(1).unwrap().0.len());
 
         // Step 3: Create permutation vector from copy constraints
         let permutation = self.create_permutation_vector(&mut plonk_cs_clone)?;
+
+        println!("cst 3 {}", plonk_cs_clone.constraints.len());
 
         println!(
             "sel col len after perm = {}",
             selector_columns.get(1).unwrap().0.len()
         );
 
-        self.plonk_cs = plonk_cs_clone;
+        // hack
+        let num_constraints = selector_columns.get(1).unwrap().0.len();
+
+        println!("cst 4 {}", plonk_cs_clone.constraints.clone().len());
+        self.plonk_cs = plonk_cs_clone.clone();
+        println!("cst 6 {}", plonk_cs_clone.constraints.clone().len());
+        println!("cst 5 {}", self.plonk_cs.constraints.len());
 
         // Step 4: Create circuit parameters
         let params = PlonkishCircuitParams {
-            num_constraints: self.plonk_cs.constraints.len(),
+            num_constraints: num_constraints, //self.plonk_cs.constraints.len(),
             num_pub_input: self.plonk_cs.public_inputs.len(),
             gate_func: CustomizedGates::vanilla_plonk_gate(), // Standard Plonk gate
         };
@@ -955,8 +966,23 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             let wires = [copy_constraint.wire1.clone(), copy_constraint.wire2.clone()];
             for wire in wires {
                 if !plonk_cs.constraints.iter().any(|constraint| {
-                    constraint.a == wire || constraint.b == wire || constraint.c == wire
+                    (constraint.a == wire || constraint.b == wire || constraint.c == wire)
                 }) {
+                    if !(plonk_cs
+                        .all_inputs
+                        .iter()
+                        .any(|name| wire.name.starts_with(name))
+                        || plonk_cs
+                            .all_inputs
+                            .iter()
+                            .any(|name| wire.name.starts_with(name))
+                        || plonk_cs
+                            .all_inputs
+                            .iter()
+                            .any(|name| wire.name.starts_with(name)))
+                    {
+                        continue;
+                    }
                     println!("hello wire {:?}", wire);
 
                     let constraint = PlonkConstraint {
@@ -969,12 +995,13 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                         b: plonk_cs.zero_wire().clone(),
                         c: plonk_cs.zero_wire().clone(),
                     };
-                    println!("incr");
+                    //println!("incr");
                     plonk_cs.constraints.insert(0, constraint);
                 }
             }
         }
 
+        println!("all inputs = {:?}", plonk_cs.all_inputs);
         for (i, constraint) in plonk_cs.constraints.iter().enumerate() {
             // Add (a, b, c) to the witness table
             witness_table.push((
@@ -987,13 +1014,13 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             wire_to_indices.insert(constraint.a.index, i * 3);
             wire_to_indices.insert(constraint.b.index, i * 3 + 1);
             wire_to_indices.insert(constraint.c.index, i * 3 + 2);
-            println!("i={}", i * 3);
-            println!("i={}", i * 3 + 1);
-            println!("i={}", i * 3 + 2);
-            println!(
-                "inserted wires indices {}, {}, {}",
-                constraint.a.index, constraint.b.index, constraint.c.index
-            );
+            //println!("i={}", i * 3);
+            //println!("i={}", i * 3 + 1);
+            //println!("i={}", i * 3 + 2);
+            //println!(
+            //    "inserted wires indices {}, {}, {}",
+            //    constraint.a.index, constraint.b.index, constraint.c.index
+            //);
         }
 
         // Step 2: Build the permutation vector
@@ -1001,7 +1028,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         println!("perm len = {}", n);
         let mut permutation: Vec<F> = (0..n).map(|i| F::from(i as u64)).collect();
 
-        println!("copy constraints = {:?}", plonk_cs.copy_constraints);
+        //println!("copy constraints = {:?}", plonk_cs.copy_constraints);
         for copy_constraint in &plonk_cs.copy_constraints {
             let idx1 = *wire_to_indices.get(&copy_constraint.wire1.index).unwrap();
             let idx2 = *wire_to_indices.get(&copy_constraint.wire2.index).unwrap();
@@ -1017,7 +1044,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         }
         assert_eq!(seen.len(), n, "Permutation is incomplete");
 
-        println!("permutation = {:?}", permutation);
+        //println!("permutation = {:?}", permutation);
 
         Ok(permutation)
     }
@@ -1043,7 +1070,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         let num_constraints = self.plonk_cs.constraints.clone().len();
         //let num_witnesses = self.next_witness_index.clone();
         println!("num_witnesses: {}", self.next_witness_index);
-        println!("num_constraints = {}", self.plonk_cs.constraints.len());
+        println!("num_constraints = {}", num_constraints);
         let mut values = vec![F::zero(); 3 * num_constraints];
 
         let vars: HashMap<Var, FieldV> = self.eval_all_vars(&self.inputs);
@@ -1105,7 +1132,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             let constraint_value =
                 q_l * a_val + q_r * b_val + q_o * c_val + q_m * a_val * b_val + q_c;
 
-            println!(
+            /*println!(
                 "\n\nSelector values: q_l = {:?}, q_r = {:?}, q_o = {:?}, q_m = {:?}, q_c = {:?}\n\n",
                 q_l, q_r, q_o, q_m, q_c
             );
@@ -1113,7 +1140,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                 "\n\nWitness values: a_val = {:?}, b_val = {:?}, c_val = {:?}\n\n",
                 a_val, b_val, c_val
             );
-            println!("==========");
+            println!("==========");*/
             if constraint_value != F::zero() {
                 println!(
                     "Constraint computation: q_l * a_val = {:?}, q_r * b_val = {:?}, q_o * c_val = {:?}, q_m * a_val * b_val = {:?}, q_c = {:?}",
@@ -1969,18 +1996,36 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
 pub fn plonk_to_hyperplonk<F: PrimeField>(
     plonk_cs: PlonkCs,
 ) -> Result<(PlonkishCircuit<F>, Vec<F>), String> {
-    let mut mapper = PlonkToHyperPlonkMapper::new(plonk_cs);
+    let mut mapper = PlonkToHyperPlonkMapper::new(plonk_cs.clone());
+    println!("mapper cst len {}", mapper.plonk_cs.constraints.len());
+
     let circuit = mapper.convert()?;
+    let num_constraints = mapper.plonk_cs.constraints.clone().len();
+    println!("nb const = {}", num_constraints);
+    println!(
+        "mapper cst len {}",
+        circuit.selectors.get(1).unwrap().0.len()
+    );
+
     let witness_values = mapper.create_witness_values()?;
     let n = circuit.params.num_constraints;
-    for i in 0..n {
-        println!("sel row {:?}", PlonkishCircuit::selector_row(&circuit, i));
-        println!(
-            "wit row {:?}",
-            PlonkishCircuit::witness_row(&circuit, &witness_values, i)
-        );
-        println!("=======")
-    }
+    let n_sel = circuit.selectors.get(1).unwrap().0.len();
+    println!(
+        "n constraints {}, n_sel_rows {}, #cst {}, #wits {}",
+        n,
+        n_sel,
+        plonk_cs.constraints.len(),
+        witness_values.len()
+    );
+    // let n = circuit.params.num_constraints;
+    // for i in 0..n {
+    //     println!("sel row {:?}", PlonkishCircuit::selector_row(&circuit, i));
+    //     println!(
+    //         "wit row {:?}",
+    //         PlonkishCircuit::witness_row(&circuit, &witness_values, i)
+    //     );
+    //     println!("=======")
+    // }
     Ok((circuit, witness_values))
 }
 

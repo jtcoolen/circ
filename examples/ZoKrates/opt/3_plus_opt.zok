@@ -12,9 +12,9 @@
 def main(private field x) -> field :
     //field result = 0
 
-    field result = 1 - 7 * x +9*x
+    //field result = 1 - 7 * x +9*x
 
-    //field result = if x % 3 == 0 then x else 3*x fi
-    //result = if x % 3 == 1 then 3*x else x + 3*x fi // fails
+    field result = if x % 3 == 0 then 3*x else -1 + 4*x fi
+    //field result = if x % 3 == 1 then 3*x else 1 - 7 * x +9*x fi // fails
 
     return result
