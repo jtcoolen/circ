@@ -161,8 +161,8 @@ struct ToPlonk<'cfg> {
     cache: TermMap<EmbeddedTerm>,
     embed: Rc<RefCell<TermSet>>,
     next_idx: usize,
-    zero: Wire,
-    one: Wire,
+    zero: Wire, // todo remove
+    //one: Wire,
     cfg: &'cfg CircCfg,
     field: FieldT,
     used_vars: HashSet<String>,
@@ -174,7 +174,7 @@ impl<'cfg> ToPlonk<'cfg> {
         debug!("Starting Plonk back-end, field: {}", field);
         let mut plonk = PlonkCs::new(field.clone());
         let zero = plonk.zero_wire();
-        let one = plonk.one_wire();
+        //let one = plonk.one_wire();
 
         Self {
             plonk,
@@ -183,7 +183,7 @@ impl<'cfg> ToPlonk<'cfg> {
             used_vars,
             next_idx: 0,
             zero,
-            one,
+            //one,
             field,
             cfg,
         }
@@ -390,6 +390,25 @@ impl<'cfg> ToPlonk<'cfg> {
             self.field.new_v(-1),
             self.field.new_v(0),
             c, // q_l=1, q_r=0, q_o=-1, q_m=0, q_c=c
+            a,
+            self.zero.clone(),
+            result.clone(),
+        );
+        result
+    }
+
+    fn neg_add_const(&mut self, a: Wire, c: FieldV) -> Wire {
+        let const_term = term![Op::Const(Box::new(Value::Field(c.clone())))];
+        let sum_term = term![PF_ADD; term![PF_NEG; self.plonk.wire_values[&a].clone()], const_term];
+        let result = self.fresh_wit("neg_add_const", sum_term);
+
+        // -a + c - result = 0  =>  q_l * a + q_o * result + q_c = 0
+        self.constraint(
+            self.field.new_v(-1),
+            self.field.new_v(0),
+            self.field.new_v(-1),
+            self.field.new_v(0),
+            c, // q_l=-1, q_r=0, q_o=-1, q_m=0, q_c=c
             a,
             self.zero.clone(),
             result.clone(),
@@ -622,7 +641,8 @@ impl<'cfg> ToPlonk<'cfg> {
     /// Given a bit-values `a`, returns its (boolean) not.
     fn bool_not(&mut self, a: Wire) -> Wire {
         // NOT: 1 - a
-        self.sub(self.one.clone(), a)
+        self.neg_add_const(a, self.field.new_v(1))
+        //self.sub(self.one.clone(), a)
     }
 
     /// Given `xs`, an iterator of bit-valued wires, returns the AND of all of them.
@@ -688,8 +708,10 @@ impl<'cfg> ToPlonk<'cfg> {
             }
             Op::Var(v) if v.sort.is_bv() => {
                 let public = matches!(ty, VarType::Inst);
+                println!("bv var {:?}, public {}", v.as_ref().name, public);
                 let wire = self.fresh_var(
                     &v.name,
+                    //var.clone(),
                     term![Op::new_ubv_to_pf(self.field.clone()); var.clone()],
                     ty,
                 );
@@ -697,6 +719,7 @@ impl<'cfg> ToPlonk<'cfg> {
                 if !public {
                     self.get_bv_bits(var);
                 }
+                self.embed.borrow_mut().insert(var.clone());
             }
             Op::Var(v) if v.sort.is_pf() => {
                 assert_eq!(v.sort.as_pf(), &self.field);
@@ -903,7 +926,7 @@ impl<'cfg> ToPlonk<'cfg> {
                 Op::Var(..) => panic!("call embed_var instead"),
                 Op::Const(v) => {
                     if v.as_bool() {
-                        self.one.clone()
+                        self.plonk.one_wire()
                     } else {
                         self.zero.clone()
                     }
@@ -1095,7 +1118,7 @@ impl<'cfg> ToPlonk<'cfg> {
             // For general boolean terms, embed and assert they equal 1
             self.embed(t.clone());
             let wire = self.get_bool(t).clone();
-            let diff = self.sub(wire, self.one.clone());
+            let diff = self.add_const(wire, self.field.new_v(-1));
             self.assert_zero(diff);
         }
     }
@@ -1213,7 +1236,7 @@ impl<'cfg> ToPlonk<'cfg> {
             // For sign extension: left = shift(x, y, None), right = shift(ext_bit, y, None) - 1
             let left = self.shift_bv_lit(x, y.clone(), None);
             let right_shifted = self.shift_bv_lit(b.clone(), y, None);
-            let right = self.sub(right_shifted, self.one.clone());
+            let right = self.add_const(right_shifted, self.field.new_v(1));
             let extended = self.mul(b, right);
             self.add(left, extended)
         } else {
@@ -1391,13 +1414,21 @@ impl<'cfg> ToPlonk<'cfg> {
                                 BvNaryOp::Mul => {
                                     if bv.cs().len() * n < f_width {
                                         // Small multiplication
-                                        let product = values
-                                            .into_iter()
-                                            .fold(self.one.clone(), |acc, v| self.mul(acc, v));
+                                        let product = if values.is_empty() {
+                                            self.plonk.one_wire() // Handle empty case
+                                        } else {
+                                            values
+                                                .into_iter()
+                                                .reduce(|acc, v| self.mul(acc, v))
+                                                .unwrap()
+                                        };
+                                        /*let product = values
+                                        .into_iter()
+                                        .fold(self.plonk.one_wire(), |acc, v| self.mul(acc, v));*/
                                         (product, bv.cs().len() * n)
                                     } else {
                                         // Large multiplication with truncation
-                                        let mut product = self.one.clone();
+                                        let mut product = self.plonk.one_wire();
                                         for v in values {
                                             product = self.mul(product, v);
                                             let bits =
@@ -1735,7 +1766,7 @@ impl<'cfg> ToPlonk<'cfg> {
                                 term![PF_RECIP; 
                                 self.plonk.wire_values[&x].clone()],
                             );
-                            let one_wire = self.one.clone();
+                            let one_wire: Wire = self.plonk.one_wire();
                             let prod = self.mul(inv_x.clone(), x);
                             self.assert_equal(prod, one_wire);
                             inv_x

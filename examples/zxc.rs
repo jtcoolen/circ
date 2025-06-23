@@ -727,11 +727,20 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
     pub fn new(plonk_cs: PlonkCs) -> Self {
         let wire_values = plonk_cs.wire_values.clone();
         // extract terms: HashMap<Var, Term> from wire_values
+        /*for e in wire_values.clone() {
+            if e.1.as_bv_opt().is_some() {
+                println!("term {}", e.1);
+            }
+        }*/
+        //println!("wire values = {:?}", wire_values.clone().into_values());
         let terms = wire_values
             .iter()
-            .filter_map(|(_, term)| {
+            .filter_map(|(w, term)| {
+                if let Op::UbvToPf(_) = term.op() {
+                    println!("coucou {}", w.name);
+                }
                 if let Op::Var(var) = term.op() {
-                    println!("var {:?} = {:?}", var.name, term);
+                    println!("var2 {:?} = {:?}", var.name, term);
                     Some((var.as_ref().clone(), term.clone()))
                 } else {
                     None
@@ -746,12 +755,13 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         // add (x, 1) and (return, 3) to inputs
         inputs.insert(
             "x".to_string(),
-            Value::Field(FieldV::new_ty(1i64, FieldT::FBls12381)),
+            Value::BitVector(BitVector::new(Integer::from(1u32), 32)), //Value::Field(FieldV::new_ty(1i64, FieldT::FBls12381)),
         );
         inputs.insert(
             "return".to_string(),
-            Value::Field(FieldV::new_ty(3i64, FieldT::FBls12381)),
+            Value::BitVector(BitVector::new(Integer::from(3u32), 32)), //Value::Field(FieldV::new_ty(3i64, FieldT::FBls12381)),
         );
+
         // Map input_names to random Value in the inputs FxHashMap<String, Value>
         /*for input_name in input_names {
 
@@ -1001,6 +1011,8 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             }
         }
 
+        let mut max = 0;
+
         println!("all inputs = {:?}", plonk_cs.all_inputs);
         for (i, constraint) in plonk_cs.constraints.iter().enumerate() {
             // Add (a, b, c) to the witness table
@@ -1014,6 +1026,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             wire_to_indices.insert(constraint.a.index, i * 3);
             wire_to_indices.insert(constraint.b.index, i * 3 + 1);
             wire_to_indices.insert(constraint.c.index, i * 3 + 2);
+            max = i * 3 + 2;
             //println!("i={}", i * 3);
             //println!("i={}", i * 3 + 1);
             //println!("i={}", i * 3 + 2);
@@ -1022,6 +1035,8 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             //    constraint.a.index, constraint.b.index, constraint.c.index
             //);
         }
+
+        println!("max={}", max);
 
         // Step 2: Build the permutation vector
         let n = 3 * plonk_cs.constraints.len();
@@ -1074,7 +1089,13 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         let mut values = vec![F::zero(); 3 * num_constraints];
 
         let vars: HashMap<Var, FieldV> = self.eval_all_vars(&self.inputs);
+        println!(
+            "eval_all_vars {:?}, inputs {:?}",
+            vars.clone().into_values(),
+            self.inputs
+        );
         for (var, field_v) in vars {
+            println!("inserting val {}", var.name);
             let field_f = self.field_v_to_f(&field_v)?;
             self.var_vals.insert(var.name.to_string(), field_f);
         }
@@ -1196,9 +1217,12 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
     fn eval_all_vars(&self, inputs: &FxHashMap<String, Value>) -> HashMap<Var, FieldV> {
         let after_precompute = self.precompute.eval(inputs);
         let mut cache = Default::default();
+        println!("in  eval all vars");
+        println!("term = {:?}", self.terms.clone().into_values());
         self.terms
             .iter()
             .map(|(var, term)| {
+                println!("one var {:?}", var.clone().name);
                 let val = eval_cached(term, &after_precompute, &mut cache);
                 if let Value::Field(f) = val {
                     (var.clone(), f.clone())
@@ -1219,6 +1243,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         let result = match term.op() {
             // Direct field constant
             Op::Const(boxed_val) => {
+                //println!("Constant {}", boxed_val.as_ref());
                 match boxed_val.as_ref() {
                     Value::Field(field_val) => Ok(self.field_v_to_f(field_val)?),
                     Value::Bool(b) => Ok(if *b { F::one() } else { F::zero() }),
@@ -1238,6 +1263,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
 
             // Variable lookup
             Op::Var(var) => {
+                println!("Var {}={}", var.as_ref().name, var.as_ref().sort);
                 /*if let Some(assigned_value) = self.plonk_cs.witness.iter().find(|wire| {
                     wire.name.starts_with(&*var.name)
                         && wire.name[var.name.len()..].starts_with("_n")
@@ -1258,6 +1284,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                 if let Some(value) = self.var_vals.get(&var.as_ref().name.as_ref().to_string()) {
                     Ok(*value)
                 } else {
+                    println!("var_vals = {:?}", self.var_vals);
                     Err(format!("No assignment for variable: {}", var.name))
                 }
                 //todo!("Implement variable lookup for Term: {}", var.name)
@@ -1644,12 +1671,15 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             }
 
             // Unsigned bit-vector to prime field
-            Op::UbvToPf(_field) => {
+            Op::UbvToPf(field) => {
                 let children = term.cs();
                 if children.len() != 1 {
                     return Err("UbvToPf expects 1 operand".to_string());
                 }
                 // Convert and take modulus - for simplicity, just pass through
+                //self.term_to_f(&children[0])
+                //let res: FieldT = field.as_ref().clone();
+                //res.
                 self.term_to_f(&children[0])
             }
 
@@ -1868,6 +1898,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             | Op::UbvToFp(_)
             | Op::SbvToFp(_)
             | Op::FpToFp(_) => {
+                panic!("unimpl");
                 Err("Floating point operations not implemented in witness computation".to_string())
             }
 
