@@ -473,6 +473,12 @@ impl<'cfg> ToPlonk<'cfg> {
         );
     }
 
+    fn assert_boolean(&mut self, w: Wire) {
+        let w_squared = self.mul(w.clone(), w.clone()); // w^2
+        let diff = self.sub(w_squared, w); // w^2 - w
+        self.assert_zero(diff); // only true when w ∈ {0,1}
+    }
+
     /// Assert that two wires are equal by adding a copy constraint
     fn assert_equal(&mut self, a: Wire, b: Wire) {
         self.plonk.add_copy_constraint(a, b);
@@ -722,6 +728,7 @@ impl<'cfg> ToPlonk<'cfg> {
     /// Given a bit-valued `c`, and branches `t` and `f`, returns a wire which is `t` iff `c`, else `f`.
     fn ite(&mut self, c: Wire, t: Wire, f: Wire) -> Wire {
         // ITE: c * (t - f) + f = c * t + (1 - c) * f
+        self.assert_boolean(c.clone());
         let diff = self.sub(t, f.clone());
         let product = self.mul(c, diff);
         self.add(product, f)
