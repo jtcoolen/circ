@@ -733,7 +733,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                 println!("term {}", e.1);
             }
         }*/
-        //println!("wire values = {:?}", wire_values.clone().into_values());
+        println!("wire keys = {:?}", wire_values.clone().into_keys());
         let terms = wire_values
             .iter()
             .filter_map(|(w, term)| {

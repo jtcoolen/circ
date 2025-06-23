@@ -1331,8 +1331,8 @@ impl<'cfg> ToPlonk<'cfg> {
                         let x = self.get_bv_uint(&bv.cs()[0]);
                         // Two's complement: flip bits and add 1, but handle x == 0 case
                         let modulus_val = self.field.new_v(Integer::from(2).pow(n as u32));
-                        let modulus_wire = self.const_wire(modulus_val).clone();
-                        let almost_neg_x = self.sub(modulus_wire, x.clone());
+                        //let modulus_wire = self.const_wire(modulus_val).clone();
+                        let almost_neg_x = self.neg_add_const(x.clone(), modulus_val);
                         let is_zero = self.is_zero(x);
                         let neg_x = self.ite(is_zero, self.zero.clone(), almost_neg_x);
                         self.set_bv_uint(bv, neg_x, n);
@@ -1405,9 +1405,17 @@ impl<'cfg> ToPlonk<'cfg> {
 
                             let (res, width) = match o {
                                 BvNaryOp::Add => {
-                                    let sum = values
-                                        .into_iter()
-                                        .fold(self.zero.clone(), |s, v| self.add(s, v));
+                                    let sum = if values.is_empty() {
+                                        self.plonk.zero_wire() // Handle empty case
+                                    } else {
+                                        values
+                                            .into_iter()
+                                            .reduce(|acc, v| self.add(acc, v))
+                                            .unwrap()
+                                    };
+                                    /*let sum = values
+                                    .into_iter()
+                                    .fold(self.zero.clone(), |s, v| self.add(s, v));*/
                                     let extra_width = bitsize(bv.cs().len().saturating_sub(1));
                                     (sum, n + extra_width)
                                 }
@@ -1456,10 +1464,10 @@ impl<'cfg> ToPlonk<'cfg> {
                         match o {
                             BvBinOp::Sub => {
                                 let modulus_val = self.field.new_v(Integer::from(2).pow(n as u32));
-                                let modulus_wire = self.const_wire(modulus_val).clone();
-                                let a = self.add(a, modulus_wire);
-                                let b = self.sub(self.zero.clone(), b);
-                                let sum = self.add(a, b);
+                                //let modulus_wire = self.const_wire(modulus_val).clone();
+                                let a = self.add_const(a, modulus_val);
+                                let sum = self.sub(a.clone(), b);
+                                //let sum = self.add(a, b);
                                 let mut bits = self.bitify("sub", &sum, n + 1, false);
                                 bits.truncate(n);
                                 self.set_bv_bits(bv, bits);
