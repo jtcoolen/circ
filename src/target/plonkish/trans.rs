@@ -398,8 +398,18 @@ impl<'cfg> ToPlonk<'cfg> {
     }
 
     fn neg_add_const(&mut self, a: Wire, c: FieldV) -> Wire {
+        // Step 1: Create fresh wires in current row to hold a and b
+        let a_new = self.fresh_wit("neg_add_const.in.0", self.plonk.wire_values[&a].clone());
+
+        // Step 2: Add copy constraints from original wires
+        self.plonk.add_copy_constraint(a.clone(), a_new.clone());
+
         let const_term = term![Op::Const(Box::new(Value::Field(c.clone())))];
-        let sum_term = term![PF_ADD; term![PF_NEG; self.plonk.wire_values[&a].clone()], const_term];
+        //let one_term = term![Op::Const(Box::new(Value::Field(self.field.new_v(1))))];
+        //let sum_term =
+        //    term![PF_ADD; const_term, term![PF_NEG; self.plonk.wire_values[&a].clone()] ];
+        let sum_term = //const_term;
+            term![PF_ADD; const_term, term![PF_NEG; self.plonk.wire_values[&a].clone()] ];
         let result = self.fresh_wit("neg_add_const", sum_term);
 
         // -a + c - result = 0  =>  q_l * a + q_o * result + q_c = 0
@@ -409,7 +419,7 @@ impl<'cfg> ToPlonk<'cfg> {
             self.field.new_v(-1),
             self.field.new_v(0),
             c, // q_l=-1, q_r=0, q_o=-1, q_m=0, q_c=c
-            a,
+            a_new,
             self.zero.clone(),
             result.clone(),
         );
@@ -444,6 +454,12 @@ impl<'cfg> ToPlonk<'cfg> {
 
     /// Assert that a wire equals zero
     fn assert_zero(&mut self, a: Wire) {
+        // Step 1: Create fresh wires in current row to hold a and b
+        let a_new = self.fresh_wit("assert_zero.in.0", self.plonk.wire_values[&a].clone());
+
+        // Step 2: Add copy constraints from original wires
+        self.plonk.add_copy_constraint(a.clone(), a_new.clone());
+
         // a = 0  =>  q_l * a = 0
         self.constraint(
             self.field.new_v(1),
@@ -451,7 +467,7 @@ impl<'cfg> ToPlonk<'cfg> {
             self.field.new_v(0),
             self.field.new_v(0),
             self.field.new_v(0), // q_l=1, q_r=0, q_o=0, q_m=0, q_c=0
-            a,
+            a_new,
             self.zero.clone(),
             self.zero.clone(),
         );
@@ -554,10 +570,10 @@ impl<'cfg> ToPlonk<'cfg> {
             self.field.new_v(0), // q_c = 0
             is_zero_copy2,       // left wire (is_zero)
             x_copy2,             // right wire (x)
-            zero_wire,           // output wire (should be 0)
+            zero_wire.clone(),   // output wire (should be 0)
         );
 
-        is_zero
+        zero_wire
     }
 
     /// Return a bit indicating whether wires `x` and `y` are equal.
@@ -591,12 +607,13 @@ impl<'cfg> ToPlonk<'cfg> {
         let bits = self.decomp(d, x, n);
         let sum = self.debitify(bits.iter().cloned(), signed);
         let diff = self.sub(sum, x.clone());
+        println!("diff {:?}, x  = {:?}, d = {}", diff, x, d);
         self.assert_zero(diff);
         bits
     }
 
     /// Given a sequence of `bits`, returns a wire which represents their sum.
-    fn debitify<I: ExactSizeIterator<Item = Wire>>(&mut self, bits: I, signed: bool) -> Wire {
+    /*fn debitify<I: ExactSizeIterator<Item = Wire>>(&mut self, bits: I, signed: bool) -> Wire {
         let n = bits.len();
         let mut acc = self.field.new_v(1u8);
         let mut result = self.zero.clone();
@@ -613,6 +630,34 @@ impl<'cfg> ToPlonk<'cfg> {
 
             acc *= &self.field.new_v(2u8);
         }
+        result
+    }*/
+    fn debitify<I: ExactSizeIterator<Item = Wire>>(&mut self, bits: I, signed: bool) -> Wire {
+        let mut acc = self.const_wire(self.field.new_v(1)); // acc = 1 (2^0)
+        let two = self.field.new_v(2);
+        let mut result = self.zero.clone();
+        let n = bits.len();
+
+        for (i, bit) in bits.enumerate() {
+            // Enforce that bit is boolean: bit * (bit - 1) == 0
+            let bit_sq = self.mul(bit.clone(), bit.clone());
+            let bool_check = self.sub(bit.clone(), bit_sq);
+            self.assert_zero(bool_check); // bit * (bit - 1) == 0
+
+            // term = acc * bit
+            let term = self.mul(acc.clone(), bit.clone());
+
+            // If signed and this is MSB, subtract instead of add
+            if signed && i + 1 == n {
+                result = self.sub(result, term);
+            } else {
+                result = self.add(result, term);
+            }
+
+            // acc *= 2
+            acc = self.mul_const(acc.clone(), two.clone());
+        }
+
         result
     }
 
@@ -681,6 +726,66 @@ impl<'cfg> ToPlonk<'cfg> {
         let product = self.mul(c, diff);
         self.add(product, f)
     }
+    /*fn ite(&mut self, c: Wire, t: Wire, f: Wire) -> Wire {
+        // Step 1: Allocate new wires for t, f, c (to allow reuse across constraints)
+        let t_new = self.fresh_wit("ite.t", self.plonk.wire_values[&t].clone());
+        let f_new = self.fresh_wit("ite.f", self.plonk.wire_values[&f].clone());
+        let c_new = self.fresh_wit("ite.c", self.plonk.wire_values[&c].clone());
+
+        self.plonk.add_copy_constraint(t.clone(), t_new.clone());
+        self.plonk.add_copy_constraint(f.clone(), f_new.clone());
+        self.plonk.add_copy_constraint(c.clone(), c_new.clone());
+
+        // Step 2: Compute diff = t - f
+        let diff_val = term![PF_ADD; self.plonk.wire_values[&t].clone(), term![PF_NEG; self.plonk.wire_values[&f].clone()]];
+        let diff = self.fresh_wit("ite.diff", diff_val.clone());
+
+        // Constraint: t - f - diff = 0 → q_l=1, q_r=-1, q_o=-1
+        self.constraint(
+            self.field.new_v(1),
+            self.field.new_v(-1),
+            self.field.new_v(-1),
+            self.field.new_v(0),
+            self.field.new_v(0),
+            t_new.clone(),
+            f_new.clone(),
+            diff.clone(),
+        );
+
+        // Step 3: Compute product = c * diff
+        let prod_val = term![PF_MUL; self.plonk.wire_values[&c].clone(), diff_val.clone()];
+        let product = self.fresh_wit("ite.prod", prod_val.clone());
+
+        // Constraint: c * diff - product = 0 → q_m=1, q_o=-1
+        self.constraint(
+            self.field.new_v(0),
+            self.field.new_v(0),
+            self.field.new_v(-1),
+            self.field.new_v(1),
+            self.field.new_v(0),
+            c_new.clone(),
+            diff.clone(),
+            product.clone(),
+        );
+
+        // Step 4: Compute result = product + f
+        let res_val = term![PF_ADD; prod_val.clone(), self.plonk.wire_values[&f].clone()];
+        let result = self.fresh_wit("ite.result", res_val);
+
+        // Constraint: product + f - result = 0 → q_l=1, q_r=1, q_o=-1
+        self.constraint(
+            self.field.new_v(1),
+            self.field.new_v(1),
+            self.field.new_v(-1),
+            self.field.new_v(0),
+            self.field.new_v(0),
+            product,
+            f_new,
+            result.clone(),
+        );
+
+        result
+    }*/
 
     /// Embed this variable
     fn embed_var(&mut self, var: &Term, ty: VarType) {
@@ -1333,10 +1438,13 @@ impl<'cfg> ToPlonk<'cfg> {
                         // Two's complement: flip bits and add 1, but handle x == 0 case
                         let modulus_val = self.field.new_v(Integer::from(2).pow(n as u32));
                         //let modulus_wire = self.const_wire(modulus_val).clone();
+                        //let neg_x = self.mul_const(x.clone(), self.field.new_v(-1));
                         let almost_neg_x = self.neg_add_const(x.clone(), modulus_val);
+                        //let almost_neg_x = self.add_const(neg_x.clone(), modulus_val)
                         let is_zero = self.is_zero(x);
                         let neg_x = self.ite(is_zero, self.zero.clone(), almost_neg_x);
                         self.set_bv_uint(bv, neg_x, n);
+
                         /*let x = self.get_bv_uint(&bv.cs()[0]);
 
                         // Method 1: Direct field negation
@@ -1464,7 +1572,7 @@ impl<'cfg> ToPlonk<'cfg> {
                                 _ => unreachable!(),
                             };
 
-                            let mut bits = self.bitify("arith", &res, width, false);
+                            let mut bits = self.bitify("arith", &res, n + 1, false); // why need increment here?
                             bits.truncate(n);
                             self.set_bv_bits(bv, bits);
                         }
@@ -1476,9 +1584,9 @@ impl<'cfg> ToPlonk<'cfg> {
                         match o {
                             BvBinOp::Sub => {
                                 println!("SUB!!!!!");
-                                //let modulus_val = self.field.new_v(Integer::from(2).pow(n as u32));
+                                let modulus_val = self.field.new_v(Integer::from(2).pow(n as u32));
                                 //let modulus_wire = self.const_wire(modulus_val).clone();
-                                //let a = self.add_const(a, modulus_val);
+                                let a = self.add_const(a, modulus_val);
                                 let sum = self.sub(a, b);
                                 //let sum = self.add(a, b);
                                 let mut bits = self.bitify("sub", &sum, n + 1, false);

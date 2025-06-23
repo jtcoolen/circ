@@ -14,6 +14,7 @@ use circ::front::zsharp::{self, ZSharpFE};
 use circ::front::{FrontEnd, Mode};
 use circ::ir::opt::{opt, Opt};
 use circ::ir::term::{Op, Term};
+use circ::target::plonkish::trans::CopyConstraint;
 use circ::target::r1cs::wit_comp;
 use circ_fields::FullFieldV::FBls12381;
 use ff::derive::bitvec::field;
@@ -734,7 +735,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                 println!("term {}", e.1);
             }
         }*/
-        println!("wire keys = {:?}", wire_values.clone().into_keys());
+        //println!("wire keys = {:?}", wire_values.clone().into_keys());
         let terms = wire_values
             .iter()
             .filter_map(|(w, term)| {
@@ -1176,6 +1177,15 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                     q_m * a_val * b_val,
                     q_c
                 );
+                println!("wire a {:?}", constraint.a);
+                if let Some(copy_constraint) = self
+                    .plonk_cs
+                    .copy_constraints
+                    .iter()
+                    .find(|cc| cc.wire1 == constraint.a || cc.wire2 == constraint.a)
+                {
+                    println!("Found copy constraint: {:?}", copy_constraint);
+                }
                 println!(
                     "row index {} out of {} = {}",
                     row_idx,
@@ -1223,7 +1233,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         let after_precompute = self.precompute.eval(&self.inputs);
         let mut cache = Default::default();
         println!("in  eval all vars");
-        println!("term = {:?}", self.terms.clone().into_values());
+        //println!("term = {:?}", self.terms.clone().into_values());
         let res = self
             .terms
             .iter()
@@ -1240,7 +1250,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                 }
             })
             .collect();
-        println!("cache {:?}", cache.clone().into_values());
+        //println!("cache {:?}", cache.clone().into_values());
         self.cache = cache;
         res
     }
