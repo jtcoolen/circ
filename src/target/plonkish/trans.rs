@@ -1481,7 +1481,7 @@ impl<'cfg> ToPlonk<'cfg> {
                                 //let a = self.add_const(a, modulus_val);
                                 let sum = self.sub(a, b);
                                 //let sum = self.add(a, b);
-                                let mut bits = self.bitify("sub", &sum, n+1, false);
+                                let mut bits = self.bitify("sub", &sum, n + 1, false);
                                 bits.truncate(n);
                                 self.set_bv_bits(bv, bits);
 

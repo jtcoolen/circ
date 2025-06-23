@@ -723,7 +723,6 @@ pub struct PlonkToHyperPlonkMapper<F: PrimeField> {
     precompute: precomp::PreComp,
     inputs: FxHashMap<String, Value>,
     cache: TermMap<Value>,
-
 }
 
 impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
@@ -758,13 +757,13 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         // add (x, 1) and (return, 3) to inputs
         inputs.insert(
             "x".to_string(),
-            //Value::BitVector(BitVector::new(Integer::from(1u32), 32)),
-            Value::Field(FieldV::new_ty(1i64, FieldT::FBls12381)),
+            Value::BitVector(BitVector::new(Integer::from(1u32), 32)),
+            //Value::Field(FieldV::new_ty(1i64, FieldT::FBls12381)),
         );
         inputs.insert(
             "return".to_string(),
-            //Value::BitVector(BitVector::new(Integer::from(3u32), 32)),
-            Value::Field(FieldV::new_ty(3i64, FieldT::FBls12381)),
+            Value::BitVector(BitVector::new(Integer::from(3u32), 32)),
+            //Value::Field(FieldV::new_ty(3i64, FieldT::FBls12381)),
         );
 
         // Map input_names to random Value in the inputs FxHashMap<String, Value>
@@ -1225,7 +1224,8 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         let mut cache = Default::default();
         println!("in  eval all vars");
         println!("term = {:?}", self.terms.clone().into_values());
-        let res = self.terms
+        let res = self
+            .terms
             .iter()
             .map(|(var, term)| {
                 println!("one var {:?}", var.clone().name);
@@ -1251,7 +1251,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         //let vs = TermMap::<Value>::default();
         /*let args: Vec<&Value> = term.cs().iter().map(|c| self.cache.get(c).unwrap()).collect();
 
-        
+
         let res = eval_op(term.op(), &args, & self.inputs);
         let res = match res {
             Value::BitVector(bv) => bv.uint().clone(),
@@ -1266,7 +1266,6 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             _ => panic!(),
         };
         self.integer_to_field(&res)
-
 
         /*if let Some(cached_result) = self.memo.get(term) {
             return Ok(*cached_result);

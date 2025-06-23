@@ -21,6 +21,7 @@
 //!    * [Value]: a variable-free (and evaluated) term
 //!
 
+use ark_ff::PrimeField;
 use circ_fields::{FieldT, FieldV};
 pub use circ_hc::{Node, Table, Weak};
 use circ_opt::FieldToBv;
@@ -1382,11 +1383,18 @@ impl Value {
     }
     #[track_caller]
     /// Get the underlying prime field constant, if possible.
-    pub fn as_pf(&self) -> &FieldV {
-        if let Value::Field(b) = self {
+    pub fn as_pf(&self) -> FieldV {
+        /*if let Value::Field(b) = self {
             b
         } else {
             panic!("Not a field-elem: {}", self)
+        }*/
+        match self {
+            Value::BitVector(bv) => {
+                FieldV::new_ty(Integer::to_i64(&bv.uint()).unwrap(), FieldT::FBls12381)
+            } // todo hack
+            Value::Field(f) => f.clone(),
+            _ => panic!(),
         }
     }
     #[track_caller]
@@ -2181,9 +2189,14 @@ impl Computation {
         // set all challenges to 1.
         for v in self.metadata.vars.values() {
             if v.random {
-                let field = v.sort.as_pf();
-                let value = Value::Field(eval::eval_pf_challenge(&v.name, field));
-                values.insert(v.name.clone(), value);
+                match v.sort.clone() {
+                    Sort::Field(f) => {
+                        let value = Value::Field(eval::eval_pf_challenge(&v.name, &f));
+                        values.insert(v.name.clone(), value);
+                    }
+
+                    _ => (),
+                };
             }
         }
 

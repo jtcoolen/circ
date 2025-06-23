@@ -19,7 +19,7 @@
 
     return result*/
 
-/*def main(private u32 x) -> u32 :
+def main(private u32 x) -> u32 :
     //field result = 0
 
     //u32 result = x+x+x
@@ -37,9 +37,9 @@
    //u32 result = if x % 3 == 0 then 3*x else 2*x+x  fi
     //field result = if x % 3 == 1 then 3*x else 1 - 7 * x +9*x fi // fails
 
-    return result*/
+    return result
 
-
+/*
 def main(private field x) -> field :
     //field result = 0
 
@@ -50,4 +50,4 @@ def main(private field x) -> field :
     field result = if x % 3 == 0 then 3*x else -1 + 4*x fi
     //field result = if x % 3 == 1 then 3*x else 1 - 7 * x +9*x fi // fails
 
-    return result
+    return result*/
