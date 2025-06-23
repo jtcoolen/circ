@@ -16,6 +16,7 @@ use circ::ir::opt::{opt, Opt};
 use circ::ir::term::{Op, Term};
 use circ::target::r1cs::wit_comp;
 use circ_fields::FullFieldV::FBls12381;
+use ff::derive::bitvec::field;
 use fxhash::FxHashMap;
 use rsmt2::print;
 use rug::Integer;
@@ -1224,10 +1225,13 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             .map(|(var, term)| {
                 println!("one var {:?}", var.clone().name);
                 let val = eval_cached(term, &after_precompute, &mut cache);
-                if let Value::Field(f) = val {
-                    (var.clone(), f.clone())
-                } else {
-                    panic!("Non-field");
+                match val {
+                    Value::Field(f) => (var.clone(), f.clone()),
+                    Value::BitVector(e) => (var.clone(), self.plonk_cs.field.new_v(e.uint())),
+                    _ => {
+                        println!("val {:?}", val);
+                        panic!("Non-field");
+                    }
                 }
             })
             .collect()
@@ -1680,7 +1684,8 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                 //self.term_to_f(&children[0])
                 //let res: FieldT = field.as_ref().clone();
                 //res.
-                self.term_to_f(&children[0])
+                //self.term_to_f(&children[0])
+                self.integer_to_field(children[0].as_bv_opt().unwrap().uint())
             }
 
             // Prime field challenge

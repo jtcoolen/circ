@@ -711,8 +711,8 @@ impl<'cfg> ToPlonk<'cfg> {
                 println!("bv var {:?}, public {}", v.as_ref().name, public);
                 let wire = self.fresh_var(
                     &v.name,
-                    //var.clone(),
-                    term![Op::new_ubv_to_pf(self.field.clone()); var.clone()],
+                    var.clone(),
+                    //term![Op::new_ubv_to_pf(self.field.clone()); var.clone()],
                     ty,
                 );
                 self.set_bv_uint(var.clone(), wire, v.sort.as_bv());
