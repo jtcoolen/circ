@@ -978,42 +978,39 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         let mut witness_table = Vec::new();
         let mut wire_to_indices = HashMap::new();
 
-        for copy_constraint in plonk_cs.copy_constraints.clone() {
-            let wires = [copy_constraint.wire1.clone(), copy_constraint.wire2.clone()];
-            for wire in wires {
-                if !plonk_cs.constraints.iter().any(|constraint| {
-                    (constraint.a == wire || constraint.b == wire || constraint.c == wire)
-                }) {
-                    if !(plonk_cs
-                        .all_inputs
-                        .iter()
-                        .any(|name| wire.name.starts_with(name))
-                        || plonk_cs
-                            .all_inputs
-                            .iter()
-                            .any(|name| wire.name.starts_with(name))
-                        || plonk_cs
-                            .all_inputs
-                            .iter()
-                            .any(|name| wire.name.starts_with(name)))
-                    {
-                        continue;
-                    }
-                    println!("hello wire {:?}", wire);
-
-                    let constraint = PlonkConstraint {
-                        q_l: plonk_cs.field.new_v(0),
-                        q_r: plonk_cs.field.new_v(0),
-                        q_o: plonk_cs.field.new_v(0),
-                        q_m: plonk_cs.field.new_v(0),
-                        q_c: plonk_cs.field.new_v(0),
-                        a: wire.clone(),
-                        b: plonk_cs.zero_wire().clone(),
-                        c: plonk_cs.zero_wire().clone(),
-                    };
-                    //println!("incr");
-                    plonk_cs.constraints.insert(0, constraint);
+        let zero = plonk_cs.zero_wire().clone();
+        for cc in plonk_cs.copy_constraints.iter() {
+            for wire in [cc.wire1.clone(), cc.wire2.clone()] {
+                // Skip if it's already used in any constraint
+                if plonk_cs
+                    .constraints
+                    .iter()
+                    .any(|c| c.a == wire || c.b == wire || c.c == wire)
+                {
+                    continue;
                 }
+
+                // Only care about your public‐input wires
+                let is_pub_input = plonk_cs
+                    .all_inputs
+                    .iter()
+                    .any(|name| wire.name.starts_with(name));
+                if !is_pub_input {
+                    continue;
+                }
+
+                // Insert a zero‐gate: 0·wire + 0 = 0
+                let zero_gate = PlonkConstraint {
+                    q_l: plonk_cs.field.new_v(0),
+                    q_r: plonk_cs.field.new_v(0),
+                    q_o: plonk_cs.field.new_v(0),
+                    q_m: plonk_cs.field.new_v(0),
+                    q_c: plonk_cs.field.new_v(0),
+                    a: wire.clone(),
+                    b: zero.clone(),
+                    c: zero.clone(),
+                };
+                plonk_cs.constraints.insert(0, zero_gate);
             }
         }
 

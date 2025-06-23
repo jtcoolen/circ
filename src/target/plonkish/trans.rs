@@ -515,7 +515,82 @@ impl<'cfg> ToPlonk<'cfg> {
 
         is_zero
     }*/
+    /// Return a bit indicating whether wire `x` is zero:
+    ///   is_zero = 1 iff x = 0, else 0.
     fn is_zero(&mut self, x: Wire) -> Wire {
+        // 1) Compute the boolean condition x == 0
+        let eqz_term = term![Op::Eq;
+            self.plonk.wire_values[&x].clone(),
+            self.zero_term()
+        ];
+
+        // 2) Witness for conditional inverse: m = (x != 0) ? 1/x : 0
+        let m = self.fresh_wit(
+            "is_zero_inv",
+            term![Op::Ite;
+                eqz_term.clone(),
+                self.zero_term(),                     // if x == 0
+                term![PF_RECIP; self.plonk.wire_values[&x].clone()]  // else 1/x
+            ],
+        );
+
+        // 3) Witness for the bit: is_zero = (x == 0) ? 1 : 0
+        let is_zero = self.fresh_wit(
+            "is_zero_bit",
+            term![Op::Ite;
+                eqz_term,
+                self.one_term(),   // if x == 0
+                self.zero_term()   // else
+            ],
+        );
+
+        // 4) Make row-local copies and copy-constraints for x, m, and is_zero
+        let x_row = self.fresh_wit("is_zero_x", self.plonk.wire_values[&x].clone());
+        //let m_row      = self.fresh_wit("is_zero_m",      self.plonk.wire_values[&m].clone());
+        //let is_zero_row = self.fresh_wit("is_zero_bit_r", self.plonk.wire_values[&is_zero].clone());
+
+        self.plonk.add_copy_constraint(x.clone(), x_row.clone());
+        //self.plonk.add_copy_constraint(m.clone(),      m_row.clone());
+        //self.plonk.add_copy_constraint(is_zero.clone(), is_zero_row.clone());
+
+        // 5) Gate 1:   m * x + is_zero - 1 = 0
+        //    → q_m=1, q_o=1, q_c=-1
+        self.constraint(
+            /*q_l=*/ self.field.new_v(0),
+            /*q_r=*/ self.field.new_v(0),
+            /*q_o=*/ self.field.new_v(1),
+            /*q_m=*/ self.field.new_v(1),
+            /*q_c=*/ self.field.new_v(-1),
+            m.clone(),
+            x_row.clone(),
+            is_zero.clone(),
+        );
+
+        // 6) Gate 2:   is_zero * x = 0
+        //    → q_m=1, all others = 0
+        let zero_row = self.fresh_wit("is_zero_zero", self.zero_term());
+        self.plonk.add_copy_constraint(x.clone(), x_row.clone());
+
+        let is_zero_row = self.fresh_wit("is_zero_bit_r", self.plonk.wire_values[&is_zero].clone());
+        self.plonk
+            .add_copy_constraint(is_zero.clone(), is_zero_row.clone());
+
+        self.constraint(
+            /*q_l=*/ self.field.new_v(0),
+            /*q_r=*/ self.field.new_v(0),
+            /*q_o=*/ self.field.new_v(0),
+            /*q_m=*/ self.field.new_v(1),
+            /*q_c=*/ self.field.new_v(0),
+            is_zero_row,
+            x_row,
+            zero_row,
+        );
+
+        // Return the actual bit wire
+        is_zero.clone()
+    }
+
+    /*fn is_zero(&mut self, x: Wire) -> Wire {
         let eqz = term![Op::Eq;
             self.plonk.wire_values[&x].clone(),
             self.zero_term()
@@ -524,7 +599,7 @@ impl<'cfg> ToPlonk<'cfg> {
         // Generate witness values
         let m = self.fresh_wit(
             "is_zero_inv",
-            term![Op::Ite; eqz.clone(), self.zero_term(), 
+            term![Op::Ite; eqz.clone(), self.zero_term(),
                   term![PF_RECIP; self.plonk.wire_values[&x].clone()]],
         );
         let is_zero = self.fresh_wit(
@@ -580,7 +655,78 @@ impl<'cfg> ToPlonk<'cfg> {
         );
 
         zero_wire
-    }
+    }*/
+    /// Return a bit indicating whether wire `x` is zero:
+    ///   is_zero = 1 iff x = 0, else 0.
+    /*fn is_zero(&mut self, x: Wire) -> Wire {
+        // 1) Compute the boolean condition x == 0
+        let eqz_term = term![Op::Eq;
+            self.plonk.wire_values[&x].clone(),
+            self.zero_term()
+        ];
+
+        // 2) Witness for conditional inverse: m = (x != 0) ? 1/x : 0
+        let m = self.fresh_wit(
+            "is_zero_inv",
+            term![Op::Ite;
+                eqz_term.clone(),
+                self.zero_term(),                     // if x == 0
+                term![PF_RECIP; self.plonk.wire_values[&x].clone()]  // else 1/x
+            ]
+        );
+
+        // 3) Witness for the bit: is_zero = (x == 0) ? 1 : 0
+        let is_zero = self.fresh_wit(
+            "is_zero_bit",
+            term![Op::Ite;
+                eqz_term,
+                self.one_term(),   // if x == 0
+                self.zero_term()   // else
+            ]
+        );
+
+        // 4) Make row-local copies and copy-constraints for x, m, and is_zero
+        let x_row      = self.fresh_wit("is_zero_x",      self.plonk.wire_values[&x].clone());
+        let m_row      = self.fresh_wit("is_zero_m",      self.plonk.wire_values[&m].clone());
+        let is_zero_row = self.fresh_wit("is_zero_bit_r", self.plonk.wire_values[&is_zero].clone());
+
+        self.plonk.add_copy_constraint(x.clone(),      x_row.clone());
+        self.plonk.add_copy_constraint(m.clone(),      m_row.clone());
+        self.plonk.add_copy_constraint(is_zero.clone(), is_zero_row.clone());
+
+        // 5) Gate 1:   m * x + is_zero - 1 = 0
+        //    → q_m=1, q_o=1, q_c=-1
+        self.constraint(
+            /*q_l=*/ self.field.new_v(0),
+            /*q_r=*/ self.field.new_v(0),
+            /*q_o=*/ self.field.new_v(1),
+            /*q_m=*/ self.field.new_v(1),
+            /*q_c=*/ self.field.new_v(-1),
+            m_row.clone(),
+            x_row.clone(),
+            is_zero_row.clone(),
+        );
+
+        // 6) Gate 2:   is_zero * x = 0
+        //    → q_m=1, all others = 0
+        let zero_row = self.fresh_wit("is_zero_zero", self.zero_term());
+        self.plonk.add_copy_constraint(x.clone(),        x_row.clone());
+        self.plonk.add_copy_constraint(is_zero.clone(), is_zero_row.clone());
+
+        self.constraint(
+            /*q_l=*/ self.field.new_v(0),
+            /*q_r=*/ self.field.new_v(0),
+            /*q_o=*/ self.field.new_v(0),
+            /*q_m=*/ self.field.new_v(1),
+            /*q_c=*/ self.field.new_v(0),
+            is_zero_row,
+            x_row,
+            zero_row,
+        );
+
+        // Return the actual bit wire
+        is_zero
+    }*/
 
     /// Return a bit indicating whether wires `x` and `y` are equal.
     fn are_equal(&mut self, x: Wire, y: Wire) -> Wire {
@@ -733,6 +879,86 @@ impl<'cfg> ToPlonk<'cfg> {
         let product = self.mul(c, diff);
         self.add(product, f)
     }
+    /*fn ite(&mut self, c: Wire, t: Wire, f: Wire) -> Wire {
+        // Copy inputs to local witnesses and constrain them
+        let c_ = self.fresh_wit("ite.c", self.plonk.wire_values[&c].clone());
+        let t_ = self.fresh_wit("ite.t", self.plonk.wire_values[&t].clone());
+        let f_ = self.fresh_wit("ite.f", self.plonk.wire_values[&f].clone());
+
+        self.plonk.add_copy_constraint(c, c_.clone());
+        self.plonk.add_copy_constraint(t, t_.clone());
+        self.plonk.add_copy_constraint(f, f_.clone());
+
+        // Boolean constraint: c * (1 - c) = 0
+        let one_minus_c = self.fresh_wit(
+            "ite.1-c",
+            term![PF_ADD; self.one_term(), term![PF_NEG; self.plonk.wire_values[&c_].clone()]],
+        );
+        self.constraint(
+            self.field.new_v(1), // q_l * c
+            self.field.new_v(0), // q_r
+            self.field.new_v(0), // q_o
+            self.field.new_v(1), // q_m * c * (1 - c)
+            self.field.new_v(0), // q_c
+            c_.clone(),
+            one_minus_c.clone(),
+            self.zero.clone(),
+        );
+
+        // Compute t - f = t + (-f)
+        let t_minus_f = self.fresh_wit(
+            "ite.t_minus_f",
+            term![PF_ADD; self.plonk.wire_values[&t_].clone(), term![PF_NEG; self.plonk.wire_values[&f_].clone()]],
+        );
+
+        self.constraint(
+            self.field.new_v(1),  // q_l * t
+            self.field.new_v(-1), // q_r * f
+            self.field.new_v(-1), // q_o * (t - f)
+            self.field.new_v(0),  // q_m
+            self.field.new_v(0),
+            t_.clone(),
+            f_.clone(),
+            t_minus_f.clone(),
+        );
+
+        // Compute delta = c * (t - f)
+        let delta = self.fresh_wit(
+            "ite.delta",
+            term![PF_MUL; self.plonk.wire_values[&c_].clone(), self.plonk.wire_values[&t_minus_f].clone()],
+        );
+
+        self.constraint(
+            self.field.new_v(0),
+            self.field.new_v(0),
+            self.field.new_v(-1),
+            self.field.new_v(1), // q_m * c * (t - f)
+            self.field.new_v(0),
+            c_.clone(),
+            t_minus_f.clone(),
+            delta.clone(),
+        );
+
+        // res = delta + f
+        let res = self.fresh_wit(
+            "ite.res",
+            term![PF_ADD; self.plonk.wire_values[&delta].clone(), self.plonk.wire_values[&f_].clone()],
+        );
+
+        self.constraint(
+            self.field.new_v(1),
+            self.field.new_v(1),
+            self.field.new_v(-1),
+            self.field.new_v(0),
+            self.field.new_v(0),
+            delta.clone(),
+            f_.clone(),
+            res.clone(),
+        );
+
+        res
+    }*/
+
     /*fn ite(&mut self, c: Wire, t: Wire, f: Wire) -> Wire {
         // Step 1: Allocate new wires for t, f, c (to allow reuse across constraints)
         let t_new = self.fresh_wit("ite.t", self.plonk.wire_values[&t].clone());
@@ -1291,8 +1517,9 @@ impl<'cfg> ToPlonk<'cfg> {
 
     /// Given a and b such that -2^n < a - b < 2^n, returns whether a >= b (or a > b if `strict` is set)
     fn bv_greater(&mut self, a: Wire, b: Wire, n: usize, strict: bool) -> Wire {
+        let n = if n >= 254 { 254 } else { n };
         let tweak = if strict { -1 } else { 0 };
-        let shift_val = self.field.new_v((Integer::from(1) << 254));
+        let shift_val = self.field.new_v((Integer::from(1) << n));
         let shift_wire = self.const_wire(shift_val);
         let tweak_wire = self.const_wire(self.field.new_v(tweak));
 
@@ -1451,18 +1678,6 @@ impl<'cfg> ToPlonk<'cfg> {
                         let is_zero = self.is_zero(x);
                         let neg_x = self.ite(is_zero, self.zero.clone(), almost_neg_x);
                         self.set_bv_uint(bv, neg_x, n);
-
-                        /*let x = self.get_bv_uint(&bv.cs()[0]);
-
-                        // Method 1: Direct field negation
-                        let neg_x = self.neg_add_const(x, self.field.zero()); // Just negate in the field
-                        self.set_bv_uint(bv, neg_x, n);*/
-                        /*let x = self.get_bv_uint(&bv.cs()[0]);
-                        let modulus_val = self.field.new_v(Integer::from(2).pow(n as u32));
-                        let almost_neg_x = self.neg_add_const(x.clone(), modulus_val);  // -x + 2^n = 2^n - x
-                        let is_zero = self.is_zero(x);
-                        let neg_x = self.ite(is_zero, self.zero.clone(), almost_neg_x);
-                        self.set_bv_uint(bv, neg_x, n);*/
                     }
                     Op::BvUext(extra_n) => {
                         // Zero extension
@@ -1557,9 +1772,6 @@ impl<'cfg> ToPlonk<'cfg> {
                                                 .reduce(|acc, v| self.mul(acc, v))
                                                 .unwrap()
                                         };
-                                        /*let product = values
-                                        .into_iter()
-                                        .fold(self.plonk.one_wire(), |acc, v| self.mul(acc, v));*/
                                         (product, bv.cs().len() * n)
                                     } else {
                                         // Large multiplication with truncation
@@ -1599,20 +1811,6 @@ impl<'cfg> ToPlonk<'cfg> {
                                 let mut bits = self.bitify("sub", &sum, n + 1, false);
                                 bits.truncate(n);
                                 self.set_bv_bits(bv, bits);
-
-                                /*// Instead of adding modulus, do direct subtraction and handle wraparound
-                                let diff = self.sub(a, b);  // Direct subtraction in field
-
-                                // The result might be negative in the field, but bitification should handle
-                                // the modular reduction correctly
-                                let bits = self.bitify("sub", &diff, n, false);
-                                self.set_bv_bits(bv, bits);*/
-                                /*let modulus_val = self.field.new_v(Integer::from(2).pow(n as u32));
-                                let a_plus_modulus = self.add_const(a, modulus_val);
-                                let sum = self.sub(a_plus_modulus, b);
-                                let mut bits = self.bitify("sub", &sum, n + 1, false);
-                                bits.truncate(n);
-                                self.set_bv_bits(bv, bits);*/
                             }
                             BvBinOp::Udiv | BvBinOp::Urem => {
                                 /*// Division requires witness generation
@@ -1658,7 +1856,7 @@ impl<'cfg> ToPlonk<'cfg> {
                                 };
                                 self.set_bv_bits(bv, bits);*/
 
-                                // Division requires witness generation
+                                /*// Division requires witness generation
                                 let a_bv_term =
                                     term![Op::PfToBv(n); self.plonk.wire_values[&a].clone()];
                                 let b_bv_term =
@@ -1732,6 +1930,71 @@ impl<'cfg> ToPlonk<'cfg> {
                                 let bits = match o {
                                     BvBinOp::Udiv => qb,
                                     BvBinOp::Urem => rb,
+                                    _ => unreachable!(),
+                                };
+                                self.set_bv_bits(bv, bits);*/
+                                // 1) Create the quotient and remainder witnesses from IR
+                                let a_bv = term![Op::PfToBv(n); self.plonk.wire_values[&a].clone()];
+                                let b_bv = term![Op::PfToBv(n); self.plonk.wire_values[&b].clone()];
+                                let q_term = term![Op::new_ubv_to_pf(self.field.clone()); term![BV_UDIV; a_bv.clone(), b_bv.clone()]];
+                                let r_term = term![Op::new_ubv_to_pf(self.field.clone()); term![BV_UREM; a_bv, b_bv]];
+                                let q = self.fresh_wit("div_q", q_term);
+                                let r = self.fresh_wit("div_r", r_term);
+
+                                // 2) Row 1: q * b = qb_res
+                                let b_copy =
+                                    self.fresh_wit("div_b", self.plonk.wire_values[&b].clone());
+                                let qb_res     = self.fresh_wit("div_qb", term![PF_MUL; self.plonk.wire_values[&q].clone(), self.plonk.wire_values[&b].clone()]);
+                                self.plonk.add_copy_constraint(b.clone(), b_copy.clone());
+                                self.constraint(
+                                    /*q_l*/ self.field.new_v(0),
+                                    /*q_r*/ self.field.new_v(0),
+                                    /*q_o*/ self.field.new_v(-1),
+                                    /*q_m*/ self.field.new_v(1),
+                                    /*q_c*/ self.field.new_v(0),
+                                    q.clone(),
+                                    b_copy,
+                                    qb_res.clone(),
+                                );
+
+                                // 3) Row 2: a = qb_res + r  →  a - qb_res - r = 0
+                                let a_copy =
+                                    self.fresh_wit("div_a", self.plonk.wire_values[&a].clone());
+                                let qb_copy = self.fresh_wit(
+                                    "div_qb_copy",
+                                    self.plonk.wire_values[&qb_res].clone(),
+                                );
+                                self.plonk.add_copy_constraint(a.clone(), a_copy.clone());
+                                self.plonk
+                                    .add_copy_constraint(qb_res.clone(), qb_copy.clone());
+                                self.constraint(
+                                    /*q_l*/ self.field.new_v(1),
+                                    /*q_r*/ self.field.new_v(-1),
+                                    /*q_o*/ self.field.new_v(-1),
+                                    /*q_m*/ self.field.new_v(0),
+                                    /*q_c*/ self.field.new_v(0),
+                                    a_copy,
+                                    qb_copy,
+                                    r.clone(),
+                                );
+
+                                // 4) Range‐check r: enforce 0 ≤ r < b when b != 0
+                                //    4a) bitify into k = ceil(log2(b)) bits to force 0 ≤ r < 2^k
+                                let k = (n as f64).log2().ceil() as usize; // or compute ceil(log2(b_value)) if b is constant
+                                let r_bits = self.bitify("rem_bits", &r, k, false);
+
+                                //    4b) enforce r < b via r_ge_b = bv_greater(r, b, n, /*strict=*/false)
+                                //        and assert_zero(r_ge_b)
+                                let r_ge_b = self.bv_greater(r.clone(), b.clone(), n, false);
+                                self.assert_zero(r_ge_b);
+
+                                // 5) Finally, set the bit‐vector result to either the q‐bits or the r‐bits
+                                let bits = match o {
+                                    BvBinOp::Udiv => {
+                                        let q_bits = self.bitify("quot_bits", &q, k, false);
+                                        q_bits
+                                    }
+                                    BvBinOp::Urem => r_bits,
                                     _ => unreachable!(),
                                 };
                                 self.set_bv_bits(bv, bits);
