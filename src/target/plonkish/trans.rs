@@ -1328,6 +1328,7 @@ impl<'cfg> ToPlonk<'cfg> {
                         self.set_bv_bits(bv, not_bits);
                     }
                     Op::BvUnOp(BvUnOp::Neg) => {
+                        println!("NEG!!!!!");
                         let x = self.get_bv_uint(&bv.cs()[0]);
                         // Two's complement: flip bits and add 1, but handle x == 0 case
                         let modulus_val = self.field.new_v(Integer::from(2).pow(n as u32));
@@ -1336,6 +1337,17 @@ impl<'cfg> ToPlonk<'cfg> {
                         let is_zero = self.is_zero(x);
                         let neg_x = self.ite(is_zero, self.zero.clone(), almost_neg_x);
                         self.set_bv_uint(bv, neg_x, n);
+                        /*let x = self.get_bv_uint(&bv.cs()[0]);
+
+                        // Method 1: Direct field negation
+                        let neg_x = self.neg_add_const(x, self.field.zero()); // Just negate in the field
+                        self.set_bv_uint(bv, neg_x, n);*/
+                        /*let x = self.get_bv_uint(&bv.cs()[0]);
+                        let modulus_val = self.field.new_v(Integer::from(2).pow(n as u32));
+                        let almost_neg_x = self.neg_add_const(x.clone(), modulus_val);  // -x + 2^n = 2^n - x
+                        let is_zero = self.is_zero(x);
+                        let neg_x = self.ite(is_zero, self.zero.clone(), almost_neg_x);
+                        self.set_bv_uint(bv, neg_x, n);*/
                     }
                     Op::BvUext(extra_n) => {
                         // Zero extension
@@ -1463,14 +1475,29 @@ impl<'cfg> ToPlonk<'cfg> {
 
                         match o {
                             BvBinOp::Sub => {
-                                let modulus_val = self.field.new_v(Integer::from(2).pow(n as u32));
+                                println!("SUB!!!!!");
+                                //let modulus_val = self.field.new_v(Integer::from(2).pow(n as u32));
                                 //let modulus_wire = self.const_wire(modulus_val).clone();
-                                let a = self.add_const(a, modulus_val);
-                                let sum = self.sub(a.clone(), b);
+                                //let a = self.add_const(a, modulus_val);
+                                let sum = self.sub(a, b);
                                 //let sum = self.add(a, b);
-                                let mut bits = self.bitify("sub", &sum, n + 1, false);
+                                let mut bits = self.bitify("sub", &sum, n+1, false);
                                 bits.truncate(n);
                                 self.set_bv_bits(bv, bits);
+
+                                /*// Instead of adding modulus, do direct subtraction and handle wraparound
+                                let diff = self.sub(a, b);  // Direct subtraction in field
+
+                                // The result might be negative in the field, but bitification should handle
+                                // the modular reduction correctly
+                                let bits = self.bitify("sub", &diff, n, false);
+                                self.set_bv_bits(bv, bits);*/
+                                /*let modulus_val = self.field.new_v(Integer::from(2).pow(n as u32));
+                                let a_plus_modulus = self.add_const(a, modulus_val);
+                                let sum = self.sub(a_plus_modulus, b);
+                                let mut bits = self.bitify("sub", &sum, n + 1, false);
+                                bits.truncate(n);
+                                self.set_bv_bits(bv, bits);*/
                             }
                             BvBinOp::Udiv | BvBinOp::Urem => {
                                 /*// Division requires witness generation

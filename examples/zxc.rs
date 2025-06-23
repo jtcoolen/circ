@@ -722,6 +722,8 @@ pub struct PlonkToHyperPlonkMapper<F: PrimeField> {
     terms: FxHashMap<Var, Term>,
     precompute: precomp::PreComp,
     inputs: FxHashMap<String, Value>,
+    cache: TermMap<Value>,
+
 }
 
 impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
@@ -756,11 +758,13 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         // add (x, 1) and (return, 3) to inputs
         inputs.insert(
             "x".to_string(),
-            Value::BitVector(BitVector::new(Integer::from(1u32), 32)), //Value::Field(FieldV::new_ty(1i64, FieldT::FBls12381)),
+            //Value::BitVector(BitVector::new(Integer::from(1u32), 32)),
+            Value::Field(FieldV::new_ty(1i64, FieldT::FBls12381)),
         );
         inputs.insert(
             "return".to_string(),
-            Value::BitVector(BitVector::new(Integer::from(3u32), 32)), //Value::Field(FieldV::new_ty(3i64, FieldT::FBls12381)),
+            //Value::BitVector(BitVector::new(Integer::from(3u32), 32)),
+            Value::Field(FieldV::new_ty(3i64, FieldT::FBls12381)),
         );
 
         // Map input_names to random Value in the inputs FxHashMap<String, Value>
@@ -780,6 +784,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             terms,
             precompute: precomp::PreComp::new(),
             inputs,
+            cache: TermMap::default(),
         }
     }
 
@@ -1089,7 +1094,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         println!("num_constraints = {}", num_constraints);
         let mut values = vec![F::zero(); 3 * num_constraints];
 
-        let vars: HashMap<Var, FieldV> = self.eval_all_vars(&self.inputs);
+        let vars: HashMap<Var, FieldV> = self.eval_all_vars();
         println!(
             "eval_all_vars {:?}, inputs {:?}",
             vars.clone().into_values(),
@@ -1157,8 +1162,8 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             /*println!(
                 "\n\nSelector values: q_l = {:?}, q_r = {:?}, q_o = {:?}, q_m = {:?}, q_c = {:?}\n\n",
                 q_l, q_r, q_o, q_m, q_c
-            );
-            println!(
+            );*/
+            /*println!(
                 "\n\nWitness values: a_val = {:?}, b_val = {:?}, c_val = {:?}\n\n",
                 a_val, b_val, c_val
             );
@@ -1215,12 +1220,12 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         res
     }
 
-    fn eval_all_vars(&self, inputs: &FxHashMap<String, Value>) -> HashMap<Var, FieldV> {
-        let after_precompute = self.precompute.eval(inputs);
+    fn eval_all_vars(&mut self) -> HashMap<Var, FieldV> {
+        let after_precompute = self.precompute.eval(&self.inputs);
         let mut cache = Default::default();
         println!("in  eval all vars");
         println!("term = {:?}", self.terms.clone().into_values());
-        self.terms
+        let res = self.terms
             .iter()
             .map(|(var, term)| {
                 println!("one var {:?}", var.clone().name);
@@ -1234,15 +1239,39 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                     }
                 }
             })
-            .collect()
+            .collect();
+        println!("cache {:?}", cache.clone().into_values());
+        self.cache = cache;
+        res
     }
 
     // Memoization map to store computed results
     // Use Precomp module instead with supplied circuit's inputs/outputs variables assignments
     fn term_to_f(&mut self, term: &Term) -> Result<F, String> {
-        if let Some(cached_result) = self.memo.get(term) {
+        //let vs = TermMap::<Value>::default();
+        /*let args: Vec<&Value> = term.cs().iter().map(|c| self.cache.get(c).unwrap()).collect();
+
+        
+        let res = eval_op(term.op(), &args, & self.inputs);
+        let res = match res {
+            Value::BitVector(bv) => bv.uint().clone(),
+            Value::Field(f) => f.i(),
+            _ => panic!(),
+        };
+        self.integer_to_field(&res)*/
+        let res = eval(term, &self.inputs);
+        let res = match res {
+            Value::BitVector(bv) => bv.uint().clone(),
+            Value::Field(f) => f.i(),
+            _ => panic!(),
+        };
+        self.integer_to_field(&res)
+
+
+        /*if let Some(cached_result) = self.memo.get(term) {
             return Ok(*cached_result);
         }
+        let _ = precomp::P;
 
         let result = match term.op() {
             // Direct field constant
@@ -1398,7 +1427,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                 let children = term.cs();
                 match nop {
                     BvNaryOp::Add => {
-                        let mut result = Integer::new();
+                        let mut result = Integer::from(0);
                         for child in children {
                             let val = self.term_to_f(child)?;
                             let val_int = self.field_to_integer(&val);
@@ -1684,8 +1713,10 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                 //self.term_to_f(&children[0])
                 //let res: FieldT = field.as_ref().clone();
                 //res.
-                //self.term_to_f(&children[0])
-                self.integer_to_field(children[0].as_bv_opt().unwrap().uint())
+                match children[0].as_bv_opt() {
+                    None => self.term_to_f(&children[0]),
+                    Some(bv) => self.integer_to_field(bv.uint()),
+                }
             }
 
             // Prime field challenge
@@ -1946,7 +1977,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             self.memo.insert(term.clone(), value);
         }
 
-        result
+        result*/
     }
 
     /*fn term_to_f(&self, term: &Term) -> Result<F, String> {
