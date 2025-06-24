@@ -996,7 +996,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                     .any(|name| wire.name.starts_with(name));
                 if !is_pub_input {
                     // TODO need to ensure public inputs appear first in the constraints vector
-                    //continue;
+                    continue;
                 }
 
                 let z_b = plonk_cs.zero_wire().clone();
@@ -1055,8 +1055,14 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             if copy_constraint.wire1.name == "zero" || copy_constraint.wire2.name == "zero" {
                 continue;
             }
-            //println!("wire a {:?} = {:?}", copy_constraint.wire1.name, copy_constraint.wire1.index);
-            //println!("wire b {:?} = {:?}", copy_constraint.wire2.name, copy_constraint.wire2.index);
+            /*println!(
+                "wire a {:?} = {:?}",
+                copy_constraint.wire1.name, copy_constraint.wire1.index
+            );
+            println!(
+                "wire b {:?} = {:?}",
+                copy_constraint.wire2.name, copy_constraint.wire2.index
+            );*/
             let idx1 = *wire_to_indices.get(&copy_constraint.wire1.index).unwrap();
             let idx2 = *wire_to_indices.get(&copy_constraint.wire2.index).unwrap();
             permutation.swap(idx1, idx2);
