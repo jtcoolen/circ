@@ -978,8 +978,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         let mut witness_table = Vec::new();
         let mut wire_to_indices = HashMap::new();
 
-        let zero = plonk_cs.zero_wire().clone();
-        for cc in plonk_cs.copy_constraints.iter() {
+        for cc in plonk_cs.copy_constraints.clone().iter() {
             for wire in [cc.wire1.clone(), cc.wire2.clone()] {
                 // Skip if it's already used in any constraint
                 if plonk_cs
@@ -996,8 +995,12 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                     .iter()
                     .any(|name| wire.name.starts_with(name));
                 if !is_pub_input {
-                    continue;
+                    // TODO need to ensure public inputs appear first in the constraints vector
+                    //continue;
                 }
+
+                let z_b = plonk_cs.zero_wire().clone();
+                let z_c = plonk_cs.zero_wire().clone();
 
                 // Insert a zero‐gate: 0·wire + 0 = 0
                 let zero_gate = PlonkConstraint {
@@ -1006,9 +1009,9 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                     q_o: plonk_cs.field.new_v(0),
                     q_m: plonk_cs.field.new_v(0),
                     q_c: plonk_cs.field.new_v(0),
-                    a: wire.clone(),
-                    b: zero.clone(),
-                    c: zero.clone(),
+                    a: wire.clone(), // we can pass the wire around without copy constraint as it's an input
+                    b: z_b,
+                    c: z_c,
                 };
                 plonk_cs.constraints.insert(0, zero_gate);
             }
@@ -1048,6 +1051,12 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
 
         //println!("copy constraints = {:?}", plonk_cs.copy_constraints);
         for copy_constraint in &plonk_cs.copy_constraints {
+            // Skip copy constraints involving zero wires
+            if copy_constraint.wire1.name == "zero" || copy_constraint.wire2.name == "zero" {
+                continue;
+            }
+            //println!("wire a {:?} = {:?}", copy_constraint.wire1.name, copy_constraint.wire1.index);
+            //println!("wire b {:?} = {:?}", copy_constraint.wire2.name, copy_constraint.wire2.index);
             let idx1 = *wire_to_indices.get(&copy_constraint.wire1.index).unwrap();
             let idx2 = *wire_to_indices.get(&copy_constraint.wire2.index).unwrap();
             permutation.swap(idx1, idx2);

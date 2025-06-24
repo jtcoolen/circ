@@ -161,7 +161,7 @@ struct ToPlonk<'cfg> {
     cache: TermMap<EmbeddedTerm>,
     embed: Rc<RefCell<TermSet>>,
     next_idx: usize,
-    zero: Wire, // todo remove
+    //zero: Wire, // todo remove
     //one: Wire,
     cfg: &'cfg CircCfg,
     field: FieldT,
@@ -172,8 +172,8 @@ impl<'cfg> ToPlonk<'cfg> {
     fn new(cfg: &'cfg CircCfg, used_vars: HashSet<String>) -> Self {
         let field = cfg.field().clone();
         debug!("Starting Plonk back-end, field: {}", field);
-        let mut plonk = PlonkCs::new(field.clone());
-        let zero = plonk.zero_wire();
+        let plonk = PlonkCs::new(field.clone());
+        //let zero = plonk.zero_wire();
         //let one = plonk.one_wire();
 
         Self {
@@ -182,7 +182,7 @@ impl<'cfg> ToPlonk<'cfg> {
             embed: Default::default(),
             used_vars,
             next_idx: 0,
-            zero,
+            //zero,
             //one,
             field,
             cfg,
@@ -255,6 +255,7 @@ impl<'cfg> ToPlonk<'cfg> {
 
     /// Enforce `x` to be bit-valued: x * (x - 1) = 0
     fn enforce_bit(&mut self, b: Wire) {
+        let z_c = self.plonk.zero_wire();
         // x * (x - 1) = 0  =>  x * x - x = 0  =>  q_m * a * b + q_l * a = 0
         // where a = b = x, so q_m = 1, q_l = -1
         self.constraint(
@@ -265,7 +266,7 @@ impl<'cfg> ToPlonk<'cfg> {
             self.field.new_v(0), // q_l=-1, q_r=0, q_o=0, q_m=1, q_c=0
             b.clone(),
             b.clone(),
-            self.zero.clone(),
+            z_c,
         );
     }
 
@@ -382,7 +383,7 @@ impl<'cfg> ToPlonk<'cfg> {
         let const_term = term![Op::Const(Box::new(Value::Field(c.clone())))];
         let sum_term = term![PF_ADD; self.plonk.wire_values[&a].clone(), const_term];
         let result = self.fresh_wit("add_const", sum_term);
-
+        let z_b = self.plonk.zero_wire();
         // a + c - result = 0  =>  q_l * a + q_o * result + q_c = 0
         self.constraint(
             self.field.new_v(1),
@@ -391,7 +392,7 @@ impl<'cfg> ToPlonk<'cfg> {
             self.field.new_v(0),
             c, // q_l=1, q_r=0, q_o=-1, q_m=0, q_c=c
             a,
-            self.zero.clone(),
+            z_b,
             result.clone(),
         );
         result
@@ -411,7 +412,7 @@ impl<'cfg> ToPlonk<'cfg> {
         let sum_term = //const_term;
             term![PF_ADD; const_term, term![PF_NEG; self.plonk.wire_values[&a].clone()] ];
         let result = self.fresh_wit("neg_add_const", sum_term);
-
+        let z_b = self.plonk.zero_wire();
         // -a + c - result = 0  =>  q_l * a + q_o * result + q_c = 0
         self.constraint(
             self.field.new_v(-1),
@@ -420,7 +421,7 @@ impl<'cfg> ToPlonk<'cfg> {
             self.field.new_v(0),
             c, // q_l=-1, q_r=0, q_o=-1, q_m=0, q_c=c
             a_new,
-            self.zero.clone(),
+            z_b,
             result.clone(),
         );
         result
@@ -437,7 +438,7 @@ impl<'cfg> ToPlonk<'cfg> {
         let const_term = term![Op::Const(Box::new(Value::Field(c.clone())))];
         let mul_term = term![PF_MUL; self.plonk.wire_values[&a].clone(), const_term];
         let result = self.fresh_wit("mul.out.0", mul_term);
-
+        let z_b = self.plonk.zero_wire();
         // c * a - result = 0  =>  q_l * (c * a) + q_o * result = 0
         self.constraint(
             c,
@@ -446,7 +447,7 @@ impl<'cfg> ToPlonk<'cfg> {
             self.field.new_v(0),
             self.field.new_v(0), // q_l=c, q_r=0, q_o=-1, q_m=0, q_c=0
             a_new,
-            self.zero.clone(),
+            z_b,
             result.clone(),
         );
         result
@@ -460,6 +461,8 @@ impl<'cfg> ToPlonk<'cfg> {
         // Step 2: Add copy constraints from original wires
         self.plonk.add_copy_constraint(a.clone(), a_new.clone());
 
+        let z_b = self.plonk.zero_wire();
+        let z_c = self.plonk.zero_wire();
         // a = 0  =>  q_l * a = 0
         self.constraint(
             self.field.new_v(1),
@@ -468,8 +471,8 @@ impl<'cfg> ToPlonk<'cfg> {
             self.field.new_v(0),
             self.field.new_v(0), // q_l=1, q_r=0, q_o=0, q_m=0, q_c=0
             a_new,
-            self.zero.clone(),
-            self.zero.clone(),
+            z_b,
+            z_c,
         );
     }
 
@@ -787,7 +790,7 @@ impl<'cfg> ToPlonk<'cfg> {
     fn debitify<I: ExactSizeIterator<Item = Wire>>(&mut self, bits: I, signed: bool) -> Wire {
         let mut acc = self.const_wire(self.field.new_v(1)); // acc = 1 (2^0)
         let two = self.field.new_v(2);
-        let mut result = self.zero.clone();
+        let mut result = self.plonk.zero_wire();
         let n = bits.len();
 
         for (i, bit) in bits.enumerate() {
@@ -819,7 +822,7 @@ impl<'cfg> ToPlonk<'cfg> {
     fn nary_xor<I: ExactSizeIterator<Item = Wire>>(&mut self, mut xs: I) -> Wire {
         let n = xs.len();
         if n > 3 {
-            let sum = xs.fold(self.zero.clone(), |s, i| self.add(s, i));
+            let sum = xs.fold(self.plonk.zero_wire(), |s, i| self.add(s, i));
             let sum_bits = self.bitify("sum", &sum, bitsize(n), false);
             assert!(n > 0);
             sum_bits.into_iter().next().unwrap() // safe b/c assert
@@ -865,7 +868,7 @@ impl<'cfg> ToPlonk<'cfg> {
             let a = self.nary_and(negs.into_iter());
             self.bool_not(a)
         } else {
-            let sum = xs.fold(self.zero.clone(), |s, x| self.add(s, x));
+            let sum = xs.fold(self.plonk.zero_wire(), |s, x| self.add(s, x));
             let z = self.is_zero(sum);
             self.bool_not(z)
         }
@@ -1266,7 +1269,7 @@ impl<'cfg> ToPlonk<'cfg> {
                     if v.as_bool() {
                         self.plonk.one_wire()
                     } else {
-                        self.zero.clone()
+                        self.plonk.zero_wire()
                     }
                 }
                 Op::Eq => self.embed_eq(&c.cs()[0], &c.cs()[1]),
@@ -1465,14 +1468,16 @@ impl<'cfg> ToPlonk<'cfg> {
     fn const_wire(&mut self, value: FieldV) -> Wire {
         let const_term = term![Op::Const(Box::new(Value::Field(value.clone())))];
         let c = self.plonk.new_wire("const".to_string(), const_term);
+        let z_a = self.plonk.zero_wire();
+        let z_b = self.plonk.zero_wire();
         self.constraint(
             self.field.new_v(0),
             self.field.new_v(0),
             self.field.new_v(-1),
             self.field.new_v(0),
             value,
-            self.zero.clone(),
-            self.zero.clone(),
+            z_a,
+            z_b,
             c.clone(),
         );
         c
@@ -1606,7 +1611,7 @@ impl<'cfg> ToPlonk<'cfg> {
                 let mask_wire = self.const_wire(mask_val).clone();
                 self.mul(e.clone(), mask_wire)
             }
-            None => self.zero.clone(),
+            None => self.plonk.zero_wire(),
         };
 
         // Perform the shift
@@ -1626,7 +1631,7 @@ impl<'cfg> ToPlonk<'cfg> {
         let b = bitsize(data_w - 1); // Helper function to calculate bit size
         let high_bits: Vec<Wire> = shift_amt.drain(b..).collect();
         let some_high_bit = if high_bits.is_empty() {
-            self.zero.clone()
+            self.plonk.zero_wire()
         } else {
             self.nary_or(high_bits.into_iter())
         };
@@ -1676,7 +1681,8 @@ impl<'cfg> ToPlonk<'cfg> {
                         let almost_neg_x = self.neg_add_const(x.clone(), modulus_val);
                         //let almost_neg_x = self.add_const(neg_x.clone(), modulus_val)
                         let is_zero = self.is_zero(x);
-                        let neg_x = self.ite(is_zero, self.zero.clone(), almost_neg_x);
+                        let z_t = self.plonk.zero_wire();
+                        let neg_x = self.ite(is_zero, z_t, almost_neg_x);
                         self.set_bv_uint(bv, neg_x, n);
                     }
                     Op::BvUext(extra_n) => {
@@ -1685,7 +1691,7 @@ impl<'cfg> ToPlonk<'cfg> {
                             let mut bits = self.get_bv_bits_wire(&bv.cs()[0]);
                             // Add zero bits for extension
                             for _ in 0..*extra_n {
-                                bits.push(self.zero.clone());
+                                bits.push(self.plonk.zero_wire());
                             }
                             self.set_bv_bits(bv, bits);
                         } else {
@@ -2126,14 +2132,16 @@ impl<'cfg> ToPlonk<'cfg> {
                     let const_term = term![Op::Const(Box::new(Value::Field(field_val.clone())))];
                     //println!("const {:?}", field_val);
                     let result = self.fresh_wit("const.out.0", const_term);
+                    let z_a = self.plonk.zero_wire();
+                    let z_b = self.plonk.zero_wire();
                     self.constraint(
                         self.field.zero(),
                         self.field.zero(),
                         self.field.new_v(-1),
                         self.field.zero(),
                         field_val,
-                        self.zero.clone(),
-                        self.zero.clone(),
+                        z_a,
+                        z_b,
                         result.clone(),
                     );
                     //self.plonk.new_wire("const".to_string(), const_term)
