@@ -2129,23 +2129,36 @@ impl<'cfg> ToPlonk<'cfg> {
                 Op::Var(..) => panic!("call embed_var instead"),
                 Op::Const(v) => {
                     let field_val = v.as_pf().as_ty_ref(&self.field);
-                    let const_term = term![Op::Const(Box::new(Value::Field(field_val.clone())))];
-                    //println!("const {:?}", field_val);
-                    let result = self.fresh_wit("const.out.0", const_term);
-                    let z_a = self.plonk.zero_wire();
-                    let z_b = self.plonk.zero_wire();
-                    self.constraint(
-                        self.field.zero(),
-                        self.field.zero(),
-                        self.field.new_v(-1),
-                        self.field.zero(),
-                        field_val,
-                        z_a,
-                        z_b,
-                        result.clone(),
-                    );
-                    //self.plonk.new_wire("const".to_string(), const_term)
-                    result
+                    // hack, a constant can genuinely be set to zero
+                    if field_val.is_zero() {
+                        self.plonk
+                            .wire_values
+                            .iter()
+                            .find_map(
+                                |(wire, term)| if term == &c { Some(wire.clone()) } else { None },
+                            )
+                            .expect("Wire not found for the given term")
+                            .clone()
+                    } else {
+                        let const_term =
+                            term![Op::Const(Box::new(Value::Field(field_val.clone())))];
+                        //println!("const {:?}", field_val);
+                        let result = self.fresh_wit("const.out.0", const_term);
+                        let z_a = self.plonk.zero_wire();
+                        let z_b = self.plonk.zero_wire();
+                        self.constraint(
+                            self.field.zero(),
+                            self.field.zero(),
+                            self.field.new_v(-1),
+                            self.field.zero(),
+                            field_val,
+                            z_a,
+                            z_b,
+                            result.clone(),
+                        );
+                        //self.plonk.new_wire("const".to_string(), const_term)
+                        result
+                    }
                 }
                 Op::Ite => {
                     let cond = self.get_bool(&c.cs()[0]).clone();

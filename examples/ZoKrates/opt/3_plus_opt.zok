@@ -28,7 +28,7 @@ def main(private u32 x) -> u32 :
   //  u32 result = -2*x+5*x
     //u32 result = 4*x-1
    // u32 result = 1  +9*x- 7 * x
-    //u32 result = 1 - 7 * x +9*x
+   // u32 result = 1 - 7 * x +9*x
     //u32 result = 1+2*x
    // u32 result = -(2*x)+5*x
     //u32 result = 5*x-2*x
@@ -36,7 +36,7 @@ def main(private u32 x) -> u32 :
 
 
    //u32 result = if true then 3 else 2 fi // (x%3)+2
-    u32 result = if x % 3 == 1 then 3*x else 1 - 7 * x +9*x fi // fails
+    u32 result = if x % 3 == 1 then 1 - 7 * x +9*x else 2 fi // fails
 
     return result
 
@@ -46,9 +46,10 @@ def main(private u32 x) -> u32 :
 
     //field result = 1 - 7 * x +9*x
      //field result = 1 - 7 * x +9*x
-    // field result = -x+4*x
+    field result = -1+4*x
 
-    field result = if x % 3 == 0 then 3*x else -1 + 4*x fi
+    //field result = if x % 3 == 0 then 3*x else -1 + 4*x fi
+    //field result = if x % 3 == 1 then 3*x else 1 - 7 * x +9*x fi
     //field result = if x % 3 == 1 then 3*x else 1 - 7 * x +9*x fi // fails
 
     return result*/

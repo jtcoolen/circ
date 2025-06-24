@@ -989,6 +989,11 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
                     continue;
                 }
 
+                // Skip if the wire name is "zero"
+                if wire.name == "zero" {
+                    continue;
+                }
+
                 // Only care about your public‐input wires
                 let is_pub_input = plonk_cs
                     .all_inputs
@@ -1021,6 +1026,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
 
         println!("all inputs = {:?}", plonk_cs.all_inputs);
         for (i, constraint) in plonk_cs.constraints.iter().enumerate() {
+            //println!("constraint {} = {:?}", i, constraint);
             // Add (a, b, c) to the witness table
             witness_table.push((
                 constraint.a.clone(),
@@ -1055,6 +1061,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
             if copy_constraint.wire1.name == "zero" || copy_constraint.wire2.name == "zero" {
                 continue;
             }
+
             /*println!(
                 "wire a {:?} = {:?}",
                 copy_constraint.wire1.name, copy_constraint.wire1.index
