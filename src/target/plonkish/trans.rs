@@ -761,9 +761,10 @@ impl<'cfg> ToPlonk<'cfg> {
         debug!("Bitify({}): {:?}", n, x);
         let bits = self.decomp(d, x, n);
         let sum = self.debitify(bits.iter().cloned(), signed);
-        let diff = self.sub(sum, x.clone());
-        println!("diff {:?}, x  = {:?}, d = {}", diff, x, d);
-        self.assert_zero(diff);
+        //let diff = self.sub(sum, x.clone());
+        //println!("diff {:?}, x  = {:?}, d = {}", diff, x, d);
+        //self.assert_zero(diff);
+        self.plonk.add_copy_constraint(sum, x.clone());
         bits
     }
 
