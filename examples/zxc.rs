@@ -1026,7 +1026,7 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
 
         println!("all inputs = {:?}", plonk_cs.all_inputs);
         for (i, constraint) in plonk_cs.constraints.iter().enumerate() {
-            //println!("constraint {} = {:?}", i, constraint);
+            println!("constraint {} = {:?}", i, constraint);
             // Add (a, b, c) to the witness table
             witness_table.push((
                 constraint.a.clone(),

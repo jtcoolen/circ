@@ -787,20 +787,94 @@ impl<'cfg> ToPlonk<'cfg> {
         }
         result
     }*/
-    fn debitify<I: ExactSizeIterator<Item = Wire>>(&mut self, bits: I, signed: bool) -> Wire {
-        let mut acc = self.const_wire(self.field.new_v(1)); // acc = 1 (2^0)
-        let two = self.field.new_v(2);
-        let mut result = self.plonk.zero_wire();
-        let n = bits.len();
 
-        for (i, bit) in bits.enumerate() {
+    /// acc_{i+1} = 2*acc_i + bit_i   (unsigned)
+    /// acc_{i+1} = 2*acc_i + bit_i   (unsigned)
+    fn horner_step(&mut self, acc: Wire, bit: Wire) -> Wire {
+        // 1) fresh‐copy inputs
+        let acc_ = self.fresh_wit("horner.acc", self.plonk.wire_values[&acc].clone());
+        let bit_ = self.fresh_wit("horner.bit", self.plonk.wire_values[&bit].clone());
+        self.plonk.add_copy_constraint(acc, acc_.clone());
+        self.plonk.add_copy_constraint(bit, bit_.clone());
+
+        // 2) build the sum term = 2*acc_ + bit_
+        let acc_term = self.plonk.wire_values[&acc_].clone();
+        let bit_term = self.plonk.wire_values[&bit_].clone();
+        let mul2 = term![PF_MUL;
+            acc_term.clone(),
+            term![Op::Const(Box::new(Value::Field(self.field.new_v(2))))]
+        ];
+        let sum = term![PF_ADD; mul2, bit_term.clone()];
+
+        // 3) fresh‐wit the result
+        let result = self.fresh_wit("horner.result", sum);
+
+        // 4) enforce 2*acc_ + bit_ - result == 0
+        self.constraint(
+            self.field.new_v(2),  // q_l * acc_
+            self.field.new_v(1),  // q_r * bit_
+            self.field.new_v(-1), // q_o * result
+            self.field.new_v(0),  // q_m
+            self.field.new_v(0),  // q_c
+            acc_,
+            bit_,
+            result.clone(),
+        );
+
+        result
+    }
+
+    fn debitify<I: ExactSizeIterator<Item = Wire>>(&mut self, bits: I, signed: bool) -> Wire {
+        //let mut acc = self.const_wire(self.field.new_v(1)); // acc = 1 (2^0)
+        //let two = self.field.new_v(2);
+        let mut result = self.plonk.zero_wire();
+        //let n = bits.len();
+
+        let bits_vec: Vec<_> = bits.collect();
+        for (i, bit) in bits_vec.into_iter().enumerate().rev() {
             // Enforce that bit is boolean: bit * (bit - 1) == 0
-            let bit_sq = self.mul(bit.clone(), bit.clone());
-            let bool_check = self.sub(bit.clone(), bit_sq);
-            self.assert_zero(bool_check); // bit * (bit - 1) == 0
+            //let bit_sq = self.mul(bit.clone(), bit.clone());
+            //let bool_check = self.sub(bit.clone(), bit_sq);
+            /*let z_c = self.plonk.zero_wire();
+            self.constraint(
+                self.field.new_v(-1),
+                self.field.new_v(0),
+                self.field.zero(),
+                self.field.new_v(1),
+                self.field.zero(),
+                bit.clone(),
+                bit.clone(),
+                z_c,
+            );*/
+            //self.assert_zero(bool_check); // bit * (bit - 1) == 0
+
+            // --- booleanity check for bit ---
+            let bit_ = self.fresh_wit("boolean.bit", self.plonk.wire_values[&bit].clone());
+            self.plonk.add_copy_constraint(bit, bit_.clone());
+
+            // build 1 - bit_
+            let bit_term = self.plonk.wire_values[&bit_].clone();
+            /*let one_minus = term![PF_ADD;
+                self.one_term(),
+                term![PF_NEG; bit_term.clone()]
+            ];*/
+            //let one_minus_bit = self.fresh_wit("boolean.1-bit", one_minus);
+
+            // enforce bit_ * (1 - bit_) == 0
+            let zero = self.plonk.zero_wire();
+            self.constraint(
+                self.field.new_v(-1),
+                self.field.new_v(0),
+                self.field.new_v(0),
+                self.field.new_v(1),
+                self.field.new_v(0),
+                bit_.clone(),
+                bit_.clone(),
+                zero,
+            );
 
             // term = acc * bit
-            let term = self.mul(acc.clone(), bit.clone());
+            /*let term = self.mul(acc.clone(), bit_.clone());
 
             // If signed and this is MSB, subtract instead of add
             if signed && i + 1 == n {
@@ -810,10 +884,79 @@ impl<'cfg> ToPlonk<'cfg> {
             }
 
             // acc *= 2
-            acc = self.mul_const(acc.clone(), two.clone());
+            acc = self.mul_const(acc.clone(), two.clone());*/
+            // --- Horner step, with sign‐bit negation if needed ---
+            let step_input = if signed && i == 0 {
+                // negate bit_
+                let neg_term = term![PF_NEG; bit_term];
+                let neg_bit = self.fresh_wit("boolean.neg-bit", neg_term);
+                // enforce neg_bit + bit_ == 0
+                let zero = self.plonk.zero_wire();
+                self.constraint(
+                    self.field.new_v(1), // +1 * neg_bit
+                    self.field.new_v(1), // +1 * bit_
+                    self.field.new_v(0), // no result wire
+                    self.field.new_v(0), // no multiplication term
+                    self.field.new_v(0), // no constant
+                    neg_bit.clone(),
+                    bit_.clone(),
+                    zero,
+                );
+                neg_bit
+            } else {
+                bit_.clone()
+            };
+
+            result = self.horner_step(result, step_input);
         }
 
         result
+        /*let mut acc = self.const_wire(self.field.zero());   // ❸ start at 0
+        let n = bits.len();
+
+        let bits_vec: Vec<_> = bits.collect();
+        for (i, bit) in bits_vec.into_iter().enumerate().rev() {
+            // --- Booleanity ---
+            let bit_ = self.fresh_wit("boolean.bit", self.plonk.wire_values[&bit].clone());
+            self.plonk.add_copy_constraint(bit, bit_.clone());
+
+            let one_minus_bit = {
+                let expr = term![PF_ADD; self.one_term(),
+                                 term![PF_NEG; self.plonk.wire_values[&bit_].clone()]];
+                self.fresh_wit("boolean.1_minus_bit", expr)
+            };
+
+            // bit_ * (1 - bit_) = 0
+            let z_c = self.plonk.zero_wire();
+            self.constraint(self.field.zero(), self.field.zero(), self.field.zero(),
+                            self.field.new_v(1), self.field.zero(),
+                            bit_.clone(), one_minus_bit.clone(), z_c);
+
+            // 1 - bit_ - (1 - bit_) = 0   (ties the witnesses) ❶
+            let z_c = self.plonk.zero_wire();
+            self.constraint(self.field.new_v(1), self.field.new_v(1),
+                            self.field.zero(), self.field.zero(), self.field.new_v(-1),
+                            bit_.clone(), one_minus_bit.clone(), z_c);
+
+            // --- optional sign‑bit negation ---
+            let limb = if signed && i + 1 == n {
+                // neg_bit + bit_ = 0   ❷
+                let neg_bit = {
+                    let expr = term![PF_NEG; self.plonk.wire_values[&bit_].clone()];
+                    self.fresh_wit("boolean.neg_bit", expr)
+                };
+                let z_b = self.plonk.zero_wire();
+                self.constraint(self.field.new_v(1), self.field.zero(),
+                                self.field.zero(), self.field.zero(), self.field.zero(),
+                                bit_.clone(), z_b, neg_bit.clone());
+                neg_bit
+            } else {
+                bit_.clone()
+            };
+
+            acc = self.horner_step(acc, limb);
+        }
+        acc   // ❹*/
     }
 
     // ... Additional helper methods would continue here following similar patterns
@@ -2142,7 +2285,7 @@ impl<'cfg> ToPlonk<'cfg> {
                     } else {
                         let const_term =
                             term![Op::Const(Box::new(Value::Field(field_val.clone())))];
-                        //println!("const {:?}", field_val);
+                        println!("const {:?}", field_val);
                         let result = self.fresh_wit("const.out.0", const_term);
                         let z_a = self.plonk.zero_wire();
                         let z_b = self.plonk.zero_wire();
