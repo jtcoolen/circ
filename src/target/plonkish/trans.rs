@@ -850,12 +850,12 @@ impl<'cfg> ToPlonk<'cfg> {
             //self.assert_zero(bool_check); // bit * (bit - 1) == 0
 
             // --- booleanity check for bit ---
-            let bit_ = self.fresh_wit("boolean.bit", self.plonk.wire_values[&bit].clone());
-            self.plonk.add_copy_constraint(bit, bit_.clone());
+            //let bit_ = self.fresh_wit("boolean.bit", self.plonk.wire_values[&bit].clone());
+            //self.plonk.add_copy_constraint(bit, bit_.clone());
 
             // build 1 - bit_
-            let bit_term = self.plonk.wire_values[&bit_].clone();
-            /*let one_minus = term![PF_ADD;
+            let bit_term = self.plonk.wire_values[&bit].clone();
+            /*/*let one_minus = term![PF_ADD;
                 self.one_term(),
                 term![PF_NEG; bit_term.clone()]
             ];*/
@@ -872,7 +872,7 @@ impl<'cfg> ToPlonk<'cfg> {
                 bit_.clone(),
                 bit_.clone(),
                 zero,
-            );
+            );*/
 
             // term = acc * bit
             /*let term = self.mul(acc.clone(), bit_.clone());
@@ -900,12 +900,12 @@ impl<'cfg> ToPlonk<'cfg> {
                     self.field.new_v(0), // no multiplication term
                     self.field.new_v(0), // no constant
                     neg_bit.clone(),
-                    bit_.clone(),
+                    bit.clone(),
                     zero,
                 );
                 neg_bit
             } else {
-                bit_.clone()
+                bit.clone()
             };
 
             result = self.horner_step(result, step_input);
