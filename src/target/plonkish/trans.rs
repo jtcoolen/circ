@@ -477,9 +477,22 @@ impl<'cfg> ToPlonk<'cfg> {
     }
 
     fn assert_boolean(&mut self, w: Wire) {
-        let w_squared = self.mul(w.clone(), w.clone()); // w^2
+        /*let w_squared = self.mul(w.clone(), w.clone()); // w^2
         let diff = self.sub(w_squared, w); // w^2 - w
-        self.assert_zero(diff); // only true when w ∈ {0,1}
+        self.assert_zero(diff); // only true when w ∈ {0,1}*/
+        let z_c = self.plonk.zero_wire();
+        // x * (x - 1) = 0  =>  x * x - x = 0  =>  q_m * a * b + q_l * a = 0
+        // where a = b = x, so q_m = 1, q_l = -1
+        self.constraint(
+            self.field.new_v(-1),
+            self.field.new_v(0),
+            self.field.new_v(0),
+            self.field.new_v(1),
+            self.field.new_v(0), // q_l=-1, q_r=0, q_o=0, q_m=1, q_c=0
+            w.clone(),
+            w.clone(),
+            z_c,
+        );
     }
 
     /// Assert that two wires are equal by adding a copy constraint
@@ -1941,7 +1954,7 @@ impl<'cfg> ToPlonk<'cfg> {
                                 _ => unreachable!(),
                             };
 
-                            let mut bits = self.bitify("arith", &res, n + 1, false); // why need increment here?
+                            let mut bits = self.bitify("arith", &res, width, false); // why need increment here?
                             bits.truncate(n);
                             self.set_bv_bits(bv, bits);
                         }
@@ -1952,12 +1965,13 @@ impl<'cfg> ToPlonk<'cfg> {
 
                         match o {
                             BvBinOp::Sub => {
-                                println!("SUB!!!!!");
+                                //println!("SUB!!!!!");
                                 let modulus_val = self.field.new_v(Integer::from(2).pow(n as u32));
                                 //let modulus_wire = self.const_wire(modulus_val).clone();
                                 let a = self.add_const(a, modulus_val);
                                 let sum = self.sub(a, b);
                                 //let sum = self.add(a, b);
+                                // Now directly bitify without extra padding
                                 let mut bits = self.bitify("sub", &sum, n + 1, false);
                                 bits.truncate(n);
                                 self.set_bv_bits(bv, bits);
