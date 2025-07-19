@@ -21,6 +21,7 @@ use ff::derive::bitvec::field;
 use fxhash::FxHashMap;
 use rsmt2::print;
 use rug::Integer;
+use std::sync::Arc;
 
 /*
 use circ::target::r1cs::bellman::parse_instance;
@@ -758,13 +759,15 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         // add (x, 1) and (return, 3) to inputs
         inputs.insert(
             "x".to_string(),
-            Value::BitVector(BitVector::new(Integer::from(1u32), 32)),
-            //Value::Field(FieldV::new_ty(1i64, FieldT::FBls12381)),
+            //Value::BitVector(BitVector::new(Integer::from(1u32), 32)),
+            Value::Field(FieldV::new_ty(1i64, FieldT::FBls12381)),
         );
+        let m = Arc::new(Integer::from_str_radix("52435875175126190479447740508185965837690552500527637822603658699938581184513", 10).unwrap());
         inputs.insert(
             "return".to_string(),
-            Value::BitVector(BitVector::new(Integer::from(3u32), 32)),
-            //Value::Field(FieldV::new_ty(3i64, FieldT::FBls12381)),
+            //Value::BitVector(BitVector::new(Integer::from(3u32), 32)),
+           // Value::Field(FieldV::new_ty(3i64, FieldT::FBls12381)),
+           Value::Field(FieldV::new(Integer::from_str_radix("16217259848613312036913732945959826857688178766386049407322004704189740325302", 10).unwrap(), m))
         );
 
         // Map input_names to random Value in the inputs FxHashMap<String, Value>
