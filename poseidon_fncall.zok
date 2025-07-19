@@ -1,0 +1,8 @@
+from "./poseidon.zok" import main as poseidon
+
+
+def main(private field x) -> field :
+
+    field result = poseidon([x])
+
+    return result
