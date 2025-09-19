@@ -157,28 +157,38 @@ impl<'ast, 'ret> ZStatementWalker<'ast, 'ret> {
         let alen = acc.len();
         let (pf_id_ty, acc_offset) = if let Call(ca) = acc.first_mut().unwrap() {
             // look up function type
-            self.get_function(&id.value).and_then(|fdef| {
-                if fdef.returns.is_empty() {
-                    // XXX(unimpl) fn without return type not supported
-                    Err(ZVisitorError(format!(
-                        "ZStatementWalker: fn {} has no return type",
-                        &id.value,
-                    )))
-                } else if fdef.returns.len() > 1 {
-                    // XXX(unimpl) multiple return types not implemented
-                    Err(ZVisitorError(format!(
-                        "ZStatementWalker: fn {} has multiple returns",
-                        &id.value,
-                    )))
-                } else {
-                    let rty = if alen == 1 { rty } else { None };
-                    Ok((self.get_call_ty(fdef, ca, rty)?, 1))
+            match self.get_function(&id.value) {
+                Ok(fdef) => {
+                    if fdef.returns.is_empty() {
+                        // XXX(unimpl) fn without return type not supported
+                        Err(ZVisitorError(format!(
+                            "ZStatementWalker: fn {} has no return type",
+                            &id.value,
+                        )))
+                    } else if fdef.returns.len() > 1 {
+                        // XXX(unimpl) multiple return types not implemented
+                        Err(ZVisitorError(format!(
+                            "ZStatementWalker: fn {} has multiple returns",
+                            &id.value,
+                        )))
+                    } else {
+                        let rty = if alen == 1 { rty } else { None };
+                        self.get_call_ty(fdef, ca, rty).map(|ty| (ty, 1))
+                    }
                 }
-            })?
+                Err(_) => {
+                    // Not found: treat as custom gate, assume field type (or whatever is appropriate)
+                    // Optionally, you could check for a naming convention here
+                    let field_ty =
+                        ast::Type::Basic(ast::BasicType::Field(ast::FieldType { span: ca.span }));
+                    // Optionally, unify arguments here if you want typechecking for custom gates
+                    Ok((field_ty, 1))
+                }
+            }
         } else {
             // just look up variable type
-            (self.lookup_type(id)?, 0)
-        };
+            self.lookup_type(id).map(|ty| (ty, 0))
+        }?;
 
         // typecheck the remaining accesses
         self.walk_accesses(pf_id_ty, &pf.accesses[acc_offset..], acc_to_msacc)
@@ -627,9 +637,14 @@ impl<'ast, 'ret> ZStatementWalker<'ast, 'ret> {
     }
 
     fn get_function(&self, id: &str) -> ZResult<&ast::FunctionDefinition<'ast>> {
-        self.zgen
+        match self
+            .zgen
             .get_function(id)
             .ok_or_else(|| ZVisitorError(format!("ZStatementWalker: undeclared function {id}")))
+        {
+            Ok(res) => Ok(res),
+            Err(e) => Err(e),
+        }
     }
 
     fn get_struct_or_type(

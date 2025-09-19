@@ -409,6 +409,14 @@ impl DisplayIr for Op {
             Op::Rot(i) => write!(f, "(rot {i})"),
             Op::PfToBoolTrusted => write!(f, "pf2bool_trusted"),
             Op::ExtOp(o) => o.ir_fmt(f),
+            Op::UndefinedFnCall(c) => {
+                let arg_sorts = c.arg_sorts.iter().map(|x| x.to_string()).join(" ");
+                write!(
+                    f,
+                    "(undefined_call {} ({}) {}",
+                    c.name, arg_sorts, c.ret_sort
+                )
+            }
         }
     }
 }

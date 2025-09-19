@@ -2355,7 +2355,7 @@ impl<'cfg> ToPlonk<'cfg> {
                             // inv_x * x = 1
                             let inv_x = self.fresh_wit(
                                 "recip",
-                                term![PF_RECIP; 
+                                term![PF_RECIP;
                                 self.plonk.wire_values[&x].clone()],
                             );
                             let one_wire: Wire = self.plonk.one_wire();
@@ -2368,7 +2368,7 @@ impl<'cfg> ToPlonk<'cfg> {
                             let x2 = self.mul(x.clone(), x.clone());
                             let inv_x = self.fresh_wit(
                                 "recip",
-                                term![PF_RECIP; 
+                                term![PF_RECIP;
                                 self.plonk.wire_values[&x].clone()],
                             );
                             let lhs = self.mul(x2, inv_x.clone());
@@ -2379,12 +2379,12 @@ impl<'cfg> ToPlonk<'cfg> {
                             // i * x = 1 - z
                             // z * x = 0
                             // z * i = 0
-                            let eqz = term![Op::Eq; 
-                                self.plonk.wire_values[&x].clone(), 
+                            let eqz = term![Op::Eq;
+                                self.plonk.wire_values[&x].clone(),
                                 self.zero_term()];
                             let i = self.fresh_wit(
                                 "is_zero_inv",
-                                term![Op::Ite; eqz.clone(), self.zero_term(), 
+                                term![Op::Ite; eqz.clone(), self.zero_term(),
                                       term![PF_RECIP; self.plonk.wire_values[&x].clone()]],
                             );
                             let z = self.fresh_wit(
@@ -2418,8 +2418,8 @@ impl<'cfg> ToPlonk<'cfg> {
                             // div * x = y
                             let div = self.fresh_wit(
                                 "div",
-                                term![PF_DIV; 
-                                self.plonk.wire_values[&y].clone(), 
+                                term![PF_DIV;
+                                self.plonk.wire_values[&y].clone(),
                                 self.plonk.wire_values[&x].clone()],
                             );
                             let prod = self.mul(div.clone(), x);
@@ -2429,7 +2429,38 @@ impl<'cfg> ToPlonk<'cfg> {
                         _ => unimplemented!(),
                     }
                 }
-                _ => panic!("Non-field in embed_pf: {}", c),
+                Op::UndefinedFnCall(call) => {
+                    // We are in embed_pf: the return must be a field element.
+                    if !matches!(call.ret_sort, Sort::Field(_)) {
+                        panic!(
+                            "UndefinedFnCall '{}' returns non-field sort in embed_pf: {}",
+                            call.name, call.ret_sort
+                        );
+                    };
+                    // Convert all children to field wires using the declared arg sorts
+                    let arg_terms = c.cs();
+                    /*for (i, t) in arg_terms.iter().enumerate() {
+                        let s = &call.arg_sorts[i];
+                        args_pf.push(t);
+                    }*/
+
+                    if call.name.eq("PlonkMul2") {
+                        if arg_terms.len() != 1 {
+                            panic!("PlonkMul2 expects 1 arguments, got {}", arg_terms.len());
+                        }
+                        let a = self.get_pf(&arg_terms[0]).clone();
+                        let aa = self.mul(a.clone(), a.clone());
+                        let aa = self.mul(aa.clone(), a);
+                        aa
+                    } else {
+                        panic!(
+                            "UndefinedFnCall '{}' not implemented in embed_pf",
+                            call.name
+                        );
+                        self.plonk.zero_wire()
+                    }
+                }
+                _op => panic!("Non-field in embed_pf: {}, op: {}", c, _op),
             };
             self.cache.insert(c.clone(), EmbeddedTerm::Field(wire));
         }

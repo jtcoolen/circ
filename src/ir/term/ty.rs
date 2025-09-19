@@ -83,6 +83,7 @@ fn check_dependencies(t: &Term) -> Vec<Term> {
         Op::Rot(_) => vec![t.cs()[0].clone()],
         Op::PfToBoolTrusted => Vec::new(),
         Op::ExtOp(o) => o.check_dependencies(t),
+        Op::UndefinedFnCall(_) => Vec::new(),
     }
 }
 
@@ -217,6 +218,10 @@ fn check_raw_step(t: &Term, tys: &TypeTable) -> Result<Sort, TypeErrorReason> {
         Op::ExtOp(o) => {
             let args_sorts: Vec<&Sort> = t.cs().iter().map(get_ty).collect();
             o.check(&args_sorts)
+        }
+        Op::UndefinedFnCall(c) => {
+            Ok(c.ret_sort.clone())
+            //Ok(ret_sort.clone())
         }
         o => Err(TypeErrorReason::Custom(format!("other operator: {o}"))),
     }

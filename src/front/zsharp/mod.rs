@@ -725,7 +725,7 @@ impl<'ast> ZGen<'ast> {
             .collect()
     }
 
-    fn function_call_impl_<const IS_CNST: bool>(
+    /*fn function_call_impl_<const IS_CNST: bool>(
         &self,
         args: Vec<T>,
         egv: &[ast::ConstantGenericValue<'ast>],
@@ -783,6 +783,139 @@ impl<'ast> ZGen<'ast> {
             info!("{} ms to process {} {:?}", dur, &f_name, &f_path);
         }
         ret
+    }*/
+
+    fn ty_to_sort(&self, ty: &Ty) -> Sort {
+        match ty {
+            Ty::Bool => Sort::Bool,
+            Ty::Field => Sort::Field(cfg().field().clone()),
+            Ty::Uint(w) => Sort::BitVector(*w as usize),
+            Ty::Integer => Sort::Int, // If your IR uses a different name, adjust here.
+            // For composite returns, only enable if your Op::UndefinedFnCall supports them:
+            // Ty::Array(n, ity) => Sort::Array(Box::new(ty_to_sort(ity)), *n),
+            // Ty::Struct(..)   => { /* if supported; otherwise, surface an error */ }
+            other => panic!("Unsupported return type for undefined calls: {}", other),
+        }
+    }
+
+    fn function_call_impl_<const IS_CNST: bool>(
+        &self,
+        args: Vec<T>,
+        egv: &[ast::ConstantGenericValue<'ast>],
+        exp_ty: Option<Ty>,
+        f_path: PathBuf,
+        f_name: String,
+    ) -> Result<T, String> {
+        if IS_CNST {
+            debug!("Const function call: {} {:?}", f_name, f_path);
+        } else {
+            debug!("Function call: {} {:?}", f_name, f_path);
+        };
+        match self.functions.get(&f_path) {
+            Some(f) => {
+                match f.get(&f_name) {
+                    Some(f) => {
+                        let arg_tys = args.iter().map(|arg| arg.type_().clone());
+                        let generics = ZGenericInf::<IS_CNST>::new(self, f, &f_path, &f_name)
+                            .unify_generic(egv, exp_ty, arg_tys)?;
+
+                        let mut generic_vec = generics.clone().into_iter().collect::<Vec<_>>();
+                        generic_vec.sort_by(|(a, _), (b, _)| a.cmp(b));
+                        let before = time::Instant::now();
+
+                        let input = FnCallImplInput(
+                            IS_CNST,
+                            args.clone(),
+                            generic_vec.clone(),
+                            f_path.clone(),
+                            f_name.clone(),
+                        );
+                        let cached_value = self.fn_call_memoization.borrow().get(&input).cloned();
+
+                        let ret = if let Some(value) = cached_value {
+                            Ok(value)
+                        } else {
+                            debug!("successfully memoized {} {:?}", f_name, f_path);
+                            self.function_call_impl_inner_::<IS_CNST>(
+                                f,
+                                args,
+                                generics,
+                                f_path.clone(),
+                                f_name.clone(),
+                            )
+                            .inspect(|v| {
+                                self.fn_call_memoization
+                                    .borrow_mut()
+                                    .insert(input, v.clone());
+                            })
+                        };
+                        let dur = (time::Instant::now() - before).as_millis();
+                        if dur > 50 {
+                            info!("{} ms to process {} {:?}", dur, &f_name, &f_path);
+                        }
+                        ret
+                    }
+
+                    None => {
+                        debug!("No function {} {:?}", f_name, f_path);
+                        // Not found: treat as undefined function call
+                        let arg_terms = args.iter().map(|a| a.term.clone()).collect::<Vec<_>>();
+                        // 1) Collect arg terms & sorts
+                        let arg_terms: Vec<Term> = args.iter().map(|a| a.term.clone()).collect();
+                        let arg_sorts: Vec<Sort> = arg_terms.iter().map(|t| check(t)).collect();
+
+                        // 2) Decide return Ty/Sort: prefer the expected type if we have it, else default to Field.
+                        let (ret_ty, ret_sort) = if let Some(ty) = exp_ty.clone() {
+                            (ty.clone(), self.ty_to_sort(&ty))
+                        } else {
+                            (Ty::Field, Sort::Field(cfg().field().clone()))
+                        };
+
+                        // 3) Build the call op.  We keep only the function name user typed;
+                        //    you can include the path in `name` if you want (e.g., format!("{}::{}", f_path.display(), f_name)).
+                        let call = CallOp {
+                            name: f_name.clone(),
+                            arg_sorts,
+                            ret_sort: ret_sort.clone(),
+                        };
+
+                        // 4) Build the term and wrap it into a T with the matching Ty
+                        let t = term(Op::UndefinedFnCall(Box::new(call)), arg_terms);
+                        Ok(T::new(ret_ty, t))
+                    }
+                }
+            }
+
+            None => {
+                debug!("No function {} {:?}", f_name, f_path);
+                // Not found: treat as undefined function call
+                let arg_terms = args.iter().map(|a| a.term.clone()).collect::<Vec<_>>();
+                // 1) Collect arg terms & sorts
+                let arg_terms: Vec<Term> = args.iter().map(|a| a.term.clone()).collect();
+                let arg_sorts: Vec<Sort> = arg_terms.iter().map(|t| check(t)).collect();
+
+                // 2) Decide return Ty/Sort: prefer the expected type if we have it, else default to Field.
+                let (ret_ty, ret_sort) = if let Some(ty) = exp_ty.clone() {
+                    (ty.clone(), self.ty_to_sort(&ty))
+                } else {
+                    (Ty::Field, Sort::Field(cfg().field().clone()))
+                };
+
+                // 3) Build the call op.  We keep only the function name user typed;
+                //    you can include the path in `name` if you want (e.g., format!("{}::{}", f_path.display(), f_name)).
+                let call = CallOp {
+                    name: f_name.clone(),
+                    arg_sorts,
+                    ret_sort: ret_sort.clone(),
+                };
+
+                // 4) Build the term and wrap it into a T with the matching Ty
+                let t = term(Op::UndefinedFnCall(Box::new(call)), arg_terms);
+                Ok(T::new(ret_ty, t))
+
+                //return Ok(T::new(ty, term(Op::UndefinedFnCall(f_name.clone()), arg_terms)))
+            }
+        }
     }
 
     fn function_call_impl_inner_<const IS_CNST: bool>(

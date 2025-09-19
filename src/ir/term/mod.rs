@@ -203,6 +203,8 @@ pub enum Op {
 
     /// Extension operators. Used in compilation, but not externally supported
     ExtOp(ext::ExtOp),
+
+    UndefinedFnCall(Box<CallOp>),
 }
 
 /// Variable
@@ -394,6 +396,7 @@ impl Op {
             Op::Rot(_) => Some(1),
             Op::ExtOp(o) => o.arity(),
             Op::PfToBoolTrusted => Some(1),
+            Op::UndefinedFnCall(c) => Some(1),
         }
     }
 
