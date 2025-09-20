@@ -2739,20 +2739,22 @@ fn main() {
 
     println!("verifying: {:?}", start.elapsed());*/
 
-    use midnight_circuits::compact_std_lib as m;
-    use midnight_circuits::testing_utils::plonk_api::filecoin_srs; // or your SRS loader
-    use midnight_proofs::poly::kzg::params::ParamsKZG;
-    use midnight_curves::Bls12;
     use blake2b_simd::State as Blake2b;
-    use midnight_curves::Fq as F;
     use circ::target::halo2::trans::to_midnight_relation;
     use circ::target::halo2::trans::IrRelation;
-    
+    use midnight_circuits::compact_std_lib as m;
+    use midnight_circuits::testing_utils::plonk_api::filecoin_srs; // or your SRS loader
+    use midnight_curves::Bls12;
+    use midnight_curves::Fq as F;
+    use midnight_proofs::poly::kzg::params::ParamsKZG;
+
     // 1) Build the relation wrapper
-    let relation: circ::target::halo2::trans::IrRelation<'_> = to_midnight_relation(&cs.get("main"), cfg());
+    let relation: circ::target::halo2::trans::IrRelation<'_> =
+        to_midnight_relation(&cs.get("main"), cfg());
 
     // 2) SRS / VK / PK
-    let k = 13; // pick an adequate k; or compute with relation.midnight min_k (see m::k_from_circuit)
+    // TODO compute k from circuit
+    let k = 12; // pick an adequate k; or compute with relation.midnight min_k (see m::k_from_circuit)
     let mut srs: ParamsKZG<Bls12> = filecoin_srs(k);
     let vk = m::setup_vk(&srs, &relation);
     let pk = m::setup_pk(&relation, &vk);
@@ -2771,11 +2773,13 @@ fn main() {
         .collect();
 
     // 4) Prove
-    let proof =
-        m::prove::<_, Blake2b>(&srs, &pk, &relation, &instance, witness, rand::rngs::OsRng).unwrap();
+    let proof = m::prove::<_, Blake2b>(&srs, &pk, &relation, &instance, witness, rand::rngs::OsRng)
+        .unwrap();
 
     // 5) Verify
-    m::verify::<IrRelation<'_>, Blake2b>(&srs.verifier_params(), &vk, &instance, None, &proof).unwrap();
+    let res =
+        m::verify::<IrRelation<'_>, Blake2b>(&srs.verifier_params(), &vk, &instance, None, &proof);
+    ark_std::println!("verify = {:?}", res);
 
     // implement optimizer
     match action {

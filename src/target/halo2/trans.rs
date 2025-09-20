@@ -33,6 +33,17 @@ use midnight_proofs::{
     plonk::Error,
 };
 
+fn be32_from_biguint(n: &BigUint) -> Result<[u8; 32], &'static str> {
+    let bytes = n.to_bytes_be();
+    if bytes.len() > 32 {
+        return Err("value does not fit in 32 bytes");
+    }
+    let mut out = [0u8; 32];
+    let start = 32 - bytes.len();
+    out[start..].copy_from_slice(&bytes); // left-pad with zeros
+    Ok(out)
+}
+
 // -------------------------------
 // Assigned terms (Midnight side)
 // -------------------------------
@@ -483,7 +494,7 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                     let fv: Integer = fv.i();
                     let fv_biguint =
                         BigUint::from_bytes_be(&fv.to_digits::<u8>(rug::integer::Order::MsfBe));
-                    let fv_bytes: [u8; 32] = fv_biguint.to_bytes_be().try_into().unwrap();
+                    let fv_bytes: [u8; 32] = be32_from_biguint(&fv_biguint).unwrap();
                     let fv_f = F::from_bytes_be(&fv_bytes).unwrap();
                     AssignedTerm::Field(self.std.assign(self.lay, Value::known(fv_f))?)
                 }
