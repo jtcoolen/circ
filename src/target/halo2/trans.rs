@@ -953,6 +953,12 @@ impl<'a> m::Relation for IrRelation<'a> {
             .zip(wit_vec.into_iter())
             .collect();
 
+        ark_std::println!(
+            "Midnight relation circuit:\n public inputs: {:?}\n witnesses, {:?}",
+            imap,
+            wmap
+        );
+
         let used_vars: HashSet<String> =
             extras::free_variables(term(Op::Tuple, self.cs.outputs.clone()))
                 .into_iter()
@@ -1016,6 +1022,11 @@ pub fn to_midnight_relation<'a>(cs: &'a Computation, cfg: &'a CircCfg) -> IrRela
         .map(|t| t.as_var_name().to_owned())
         .collect();
     let all_names = cs.metadata.ordered_input_names();
+    ark_std::println!(
+        "Midnight relation: {} public inputs, {} total inputs",
+        public_names.len(),
+        all_names.len()
+    );
     IrRelation {
         cs,
         cfg,

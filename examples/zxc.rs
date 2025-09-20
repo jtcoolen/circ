@@ -41,6 +41,8 @@ use circ::cfg::{
     CircOpt,
 };
 
+use num_bigint::BigUint;
+use num_traits::Num;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -58,6 +60,29 @@ use std::cmp::max;
 use std::collections::HashSet;
 
 use ark_std::log2;
+
+use midnight_curves::Fq as F;
+
+fn be32_from_biguint(n: &BigUint) -> Result<[u8; 32], &'static str> {
+    let bytes = n.to_bytes_be();
+    if bytes.len() > 32 {
+        return Err("value does not fit in 32 bytes");
+    }
+    let mut out = [0u8; 32];
+    let start = 32 - bytes.len();
+    out[start..].copy_from_slice(&bytes); // left-pad with zeros
+    Ok(out)
+}
+
+fn f_from_dec(s: &str) -> F {
+    let n = BigUint::from_str_radix(s.trim(), 10).expect("bad decimal");
+    f_from_biguint(&n)
+}
+
+fn f_from_biguint(n: &BigUint) -> F {
+    let be = be32_from_biguint(&n).expect("value > 32 bytes; reduce mod p");
+    F::from_bytes_be(&be).expect("value >= modulus; reduce mod p")
+}
 
 /// A row of selector of width `#selectors`
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2748,38 +2773,57 @@ fn main() {
     use midnight_curves::Fq as F;
     use midnight_proofs::poly::kzg::params::ParamsKZG;
 
+    let mut assign: HashMap<String, F> = HashMap::new();
+    assign.insert("x".into(), f_from_dec("1"));
+    assign.insert(
+        "return".into(),
+        f_from_dec("16217259848613312036913732945959826857688178766386049407322004704189740325302"),
+    );
+
     // 1) Build the relation wrapper
     let relation: circ::target::halo2::trans::IrRelation<'_> =
         to_midnight_relation(&cs.get("main"), cfg());
 
-    // 2) SRS / VK / PK
-    // TODO compute k from circuit
-    let k = 12; // pick an adequate k; or compute with relation.midnight min_k (see m::k_from_circuit)
-    let mut srs: ParamsKZG<Bls12> = filecoin_srs(k);
-    let vk = m::setup_vk(&srs, &relation);
-    let pk = m::setup_pk(&relation, &vk);
-
-    // 3) Prepare instance (publics) and witness in the expected orders:
     let instance: Vec<F> = relation
         .public_names
         .iter()
-        .map(|name| /* supply F for this public */ F::from(0))
+        .map(|n| {
+            *assign
+                .get(n)
+                .unwrap_or_else(|| panic!("missing public input '{n}'"))
+        })
         .collect();
 
     let witness: Vec<F> = relation
         .all_names
         .iter()
-        .map(|name| /* supply F for this input */ F::from(0))
+        .map(|n| {
+            *assign
+                .get(n)
+                .unwrap_or_else(|| panic!("missing input '{n}'"))
+        })
         .collect();
 
-    // 4) Prove
+    //ark_std::println!("circuit size = {}", relation.);
+    // 2) SRS / VK / PK
+    // TODO compute k from circuit
+    let k = 12; // pick an adequate k; or compute with relation.midnight min_k (see m::k_from_circuit)
+
+    let mut srs: ParamsKZG<Bls12> = filecoin_srs(k);
+    let vk = m::setup_vk(&srs, &relation);
+    let pk = m::setup_pk(&relation, &vk);
+
+    // 3) Prove
+    let now = Instant::now();
     let proof = m::prove::<_, Blake2b>(&srs, &pk, &relation, &instance, witness, rand::rngs::OsRng)
         .unwrap();
+    ark_std::println!("prove ({:?})", now.elapsed());
 
-    // 5) Verify
+    let now = Instant::now();
+    // 4) Verify
     let res =
         m::verify::<IrRelation<'_>, Blake2b>(&srs.verifier_params(), &vk, &instance, None, &proof);
-    ark_std::println!("verify = {:?}", res);
+    ark_std::println!("verify = {:?} ({:?})", res, now.elapsed());
 
     // implement optimizer
     match action {
