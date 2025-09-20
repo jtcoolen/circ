@@ -2507,7 +2507,7 @@ fn main() {
     };
     println!("Final r1cs: {} constraints", r1cs.constraints().len());
     println!("{:?}", r1cs.num_vars());*/
-    let plonk = to_plonk(cs.get("main"), cfg());
+    /*let plonk = to_plonk(cs.get("main"), cfg());
     println!("plonk constraints: {:?}", plonk.constraints.len());
     println!("{:?}", plonk.public_inputs.len());
     println!("{:?}", plonk.witness.len());
@@ -2737,7 +2737,45 @@ fn main() {
     .unwrap();
     assert!(verify);
 
-    println!("verifying: {:?}", start.elapsed());
+    println!("verifying: {:?}", start.elapsed());*/
+
+    use midnight_circuits::compact_std_lib as m;
+    use midnight_circuits::testing_utils::plonk_api::filecoin_srs; // or your SRS loader
+    use midnight_proofs::poly::kzg::params::ParamsKZG;
+    use midnight_curves::Bls12;
+    use blake2b_simd::State as Blake2b;
+    use midnight_curves::Fq as F;
+    use circ::target::halo2::trans::to_midnight_relation;
+    use circ::target::halo2::trans::IrRelation;
+    
+    // 1) Build the relation wrapper
+    let relation: circ::target::halo2::trans::IrRelation<'_> = to_midnight_relation(&cs.get("main"), cfg());
+
+    // 2) SRS / VK / PK
+    let k = 13; // pick an adequate k; or compute with relation.midnight min_k (see m::k_from_circuit)
+    let mut srs: ParamsKZG<Bls12> = filecoin_srs(k);
+    let vk = m::setup_vk(&srs, &relation);
+    let pk = m::setup_pk(&relation, &vk);
+
+    // 3) Prepare instance (publics) and witness in the expected orders:
+    let instance: Vec<F> = relation
+        .public_names
+        .iter()
+        .map(|name| /* supply F for this public */ F::from(0))
+        .collect();
+
+    let witness: Vec<F> = relation
+        .all_names
+        .iter()
+        .map(|name| /* supply F for this input */ F::from(0))
+        .collect();
+
+    // 4) Prove
+    let proof =
+        m::prove::<_, Blake2b>(&srs, &pk, &relation, &instance, witness, rand::rngs::OsRng).unwrap();
+
+    // 5) Verify
+    m::verify::<IrRelation<'_>, Blake2b>(&srs.verifier_params(), &vk, &instance, None, &proof).unwrap();
 
     // implement optimizer
     match action {

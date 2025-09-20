@@ -72,6 +72,7 @@ midnight-curves = {git="https://github.com/jtcoolen/midnight-zk"}
 midnight-proofs = {git="https://github.com/jtcoolen/midnight-zk"}
 num-traits = "0.2.19"
 num-bigint = "0.4.6"
+blake2b_simd = "1.0.3"
 
 [dev-dependencies]
 quickcheck = "1"

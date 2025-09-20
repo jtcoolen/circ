@@ -2,8 +2,8 @@ from "./poseidon.zok" import main as poseidon
 
 
 def main(private field x) -> field :
-    field y = PlonkMul2(x)
+    //field y = PlonkMul2(x)
 
-    field result = poseidon([y])
+    field result = poseidon([x])
 
     return result
