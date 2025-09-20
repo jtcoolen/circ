@@ -4,18 +4,18 @@
 use crate::cfg::CircCfg;
 use crate::ir::term::*;
 use crate::target::plonkish::VarType;
-use rug::Integer;
-use num_bigint::BigUint;
-use num_traits::Num;
-use std::convert::TryInto;
 use im::HashSet;
 use log::{debug, trace};
+use num_bigint::BigUint;
+use num_traits::Num;
+use rug::Integer;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::fmt::Display;
 use std::rc::Rc;
 
-use midnight_curves::Fq as F;
+use midnight_circuits::halo2curves::ff::Field;
 use midnight_circuits::{
     compact_std_lib as m,
     instructions::{
@@ -26,9 +26,11 @@ use midnight_circuits::{
     },
     types::{AssignedBit, AssignedNative, Instantiable},
 };
- use midnight_circuits::halo2curves::ff::Field;
+use midnight_curves::Fq as F;
 use midnight_proofs::{
-    circuit::{Layouter, Value}, halo2curves::ff::PrimeField, plonk::Error
+    circuit::{Layouter, Value},
+    halo2curves::ff::PrimeField,
+    plonk::Error,
 };
 
 // -------------------------------
@@ -41,8 +43,8 @@ enum AssignedTerm {
     Bit(AssignedBit<F>),
     Bv {
         width: usize,
-        bits: Vec<AssignedBit<F>>,            // LSB-first
-        uint: Option<AssignedNative<F>>,      // cached recomposition
+        bits: Vec<AssignedBit<F>>,       // LSB-first
+        uint: Option<AssignedNative<F>>, // cached recomposition
     },
     Tuple(Vec<AssignedTerm>),
 }
@@ -81,8 +83,8 @@ struct ToMidnight<'a, 'b, L: Layouter<F>> {
     used_vars: HashSet<String>,
 
     // materialized assignment for variables (provided by Relation::Witness)
-    wmap: &'a HashMap<String, F>,        // witness (private)
-    imap: &'a HashMap<String, F>,        // instance/public
+    wmap: &'a HashMap<String, Value<F>>, // witness (private)
+    imap: &'a HashMap<String, Value<F>>, // instance/public
     pub_order: &'a [String],             // ordered public names
 }
 
@@ -92,8 +94,8 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         lay: &'b mut L,
         cfg: &'a CircCfg,
         used_vars: HashSet<String>,
-        wmap: &'a HashMap<String, F>,
-        imap: &'a HashMap<String, F>,
+        wmap: &'a HashMap<String, Value<F>>,
+        imap: &'a HashMap<String, Value<F>>,
         pub_order: &'a [String],
     ) -> Self {
         Self {
@@ -113,9 +115,15 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
     // Tiny helpers
     // -------------------------
 
-    fn f_zero(&self) -> F { F::from(0) }
-    fn f_one(&self) -> F { F::from(1) }
-    fn f_from_u64(&self, x: u64) -> F { F::from(x) }
+    fn f_zero(&self) -> F {
+        F::from(0)
+    }
+    fn f_one(&self) -> F {
+        F::from(1)
+    }
+    fn f_from_u64(&self, x: u64) -> F {
+        F::from(x)
+    }
 
     fn as_value<T: Clone>(&self, t: T) -> Value<T> {
         Value::known(t)
@@ -125,13 +133,25 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
     // Field arith mapping (add/sub/mul/const)
     // ----------------------------------------
 
-    fn add(&mut self, a: &AssignedNative<F>, b: &AssignedNative<F>) -> Result<AssignedNative<F>, Error> {
+    fn add(
+        &mut self,
+        a: &AssignedNative<F>,
+        b: &AssignedNative<F>,
+    ) -> Result<AssignedNative<F>, Error> {
         self.std.add(self.lay, a, b)
     }
-    fn sub(&mut self, a: &AssignedNative<F>, b: &AssignedNative<F>) -> Result<AssignedNative<F>, Error> {
+    fn sub(
+        &mut self,
+        a: &AssignedNative<F>,
+        b: &AssignedNative<F>,
+    ) -> Result<AssignedNative<F>, Error> {
         self.std.sub(self.lay, a, b)
     }
-    fn mul(&mut self, a: &AssignedNative<F>, b: &AssignedNative<F>) -> Result<AssignedNative<F>, Error> {
+    fn mul(
+        &mut self,
+        a: &AssignedNative<F>,
+        b: &AssignedNative<F>,
+    ) -> Result<AssignedNative<F>, Error> {
         self.std.mul(self.lay, a, b, None)
     }
     fn add_const(&mut self, a: &AssignedNative<F>, c: F) -> Result<AssignedNative<F>, Error> {
@@ -160,7 +180,8 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         n: usize,
         enforce_canonical: bool,
     ) -> Result<Vec<AssignedBit<F>>, Error> {
-        self.std.assigned_to_le_bits(self.lay, x, Some(n), enforce_canonical)
+        self.std
+            .assigned_to_le_bits(self.lay, x, Some(n), enforce_canonical)
     }
 
     fn debitify(
@@ -173,7 +194,11 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         let mut terms: Vec<(F, AssignedNative<F>)> = Vec::with_capacity(bits.len());
         for (i, bit) in bits.iter().enumerate() {
             let limb: AssignedNative<F> = self.std.convert(self.lay, bit)?;
-            let c = if signed && i + 1 == bits.len() { -coeff } else { coeff };
+            let c = if signed && i + 1 == bits.len() {
+                -coeff
+            } else {
+                coeff
+            };
             terms.push((c, limb));
             coeff = coeff + coeff; // *= 2
         }
@@ -226,7 +251,7 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
 
     fn is_zero(&mut self, x: &AssignedNative<F>) -> Result<AssignedBit<F>, Error> {
         // use sgn0 then NOT (sgn0==1 means x != 0 for the bounded encoding)
-        let nz = self.std.sgn0(self.lay, x)?;   // 1 if non-zero
+        let nz = self.std.sgn0(self.lay, x)?; // 1 if non-zero
         self.bool_not(&nz)
     }
 
@@ -258,7 +283,9 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         if !self.used_vars.contains(var.as_var_name()) {
             return Ok(()); // dead var skip
         }
-        let Op::Var(v) = var.op() else { panic!("embed_var expects Op::Var") };
+        let Op::Var(v) = var.op() else {
+            panic!("embed_var expects Op::Var")
+        };
 
         // value source
         let name = v.as_ref().name.clone();
@@ -266,14 +293,16 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
 
         match &v.sort {
             Sort::Bool => {
-                let fv = *self.wmap.get(&*name)
+                let fv = *self
+                    .wmap
+                    .get(&*name)
                     .or_else(|| self.imap.get(&*name))
-                    .unwrap_or(&self.f_zero());
-                let as_bool = fv == self.f_one();
+                    .unwrap_or(&Value::known(self.f_zero()));
+                let as_bool: Value<bool> = fv.map(|x| x == self.f_one());
                 let b = if is_public {
-                    self.std.assign_as_public_input(self.lay, self.as_value(as_bool))?
+                    self.std.assign_as_public_input(self.lay, as_bool)?
                 } else {
-                    self.std.assign(self.lay, self.as_value(as_bool))?
+                    self.std.assign(self.lay, as_bool)?
                 };
                 if is_public {
                     // guard: tie to instance value too (redundant if assign_as_public_input used)
@@ -283,10 +312,12 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
             }
             Sort::Field(fsort) => {
                 assert_eq!(fsort, self.cfg.field(), "field mismatch");
-                let fv = *self.wmap.get(&*name)
+                let fv = *self
+                    .wmap
+                    .get(&*name)
                     .or_else(|| self.imap.get(&*name))
-                    .unwrap_or(&self.f_zero());
-                let x = self.std.assign(self.lay, self.as_value(fv))?;
+                    .unwrap_or(&Value::known(self.f_zero()));
+                let x = self.std.assign(self.lay, fv)?;
                 if is_public {
                     self.std.constrain_as_public_input(self.lay, &x)?;
                 }
@@ -294,18 +325,28 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
             }
             Sort::BitVector(w) => {
                 // treat value as field, then assert it fits in w bits by decomposition
-                let fv = *self.wmap.get(&*name).or_else(|| self.imap.get(&*name)).unwrap_or(&self.f_zero());
-                let x = self.std.assign(self.lay, self.as_value(fv))?;
-                let bits = self.bitify(&x, *w, /*enforce_canonical=*/true)?;
-                self.cache.insert(var.clone(), AssignedTerm::Bv {
-                    width: *w,
-                    bits,
-                    uint: Some(x),
-                });
+                let fv = *self
+                    .wmap
+                    .get(&*name)
+                    .or_else(|| self.imap.get(&*name))
+                    .unwrap_or(&Value::known(self.f_zero()));
+                let x = self.std.assign(self.lay, fv)?;
+                let bits = self.bitify(&x, *w, /*enforce_canonical=*/ true)?;
+                self.cache.insert(
+                    var.clone(),
+                    AssignedTerm::Bv {
+                        width: *w,
+                        bits,
+                        uint: Some(x),
+                    },
+                );
                 if is_public {
                     // If you want the entire BV exposed as public input, you can
                     // do it either as one field or as bits. As a default, expose the field:
-                    self.std.constrain_as_public_input(self.lay, self.cache.get(var).unwrap().as_field())?;
+                    self.std.constrain_as_public_input(
+                        self.lay,
+                        self.cache.get(var).unwrap().as_field(),
+                    )?;
                 }
             }
             _ => panic!("Unsupported var sort {}", v.sort),
@@ -315,12 +356,21 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
 
     fn embed(&mut self, t: Term) -> Result<(), Error> {
         let visited_rc = self.visited.clone();
-        for c in extras::PostOrderSkipIter::new(t, &move |s: &Term| visited_rc.borrow().contains(s)) {
-            if self.visited.borrow().contains(&c) { continue; }
+        for c in extras::PostOrderSkipIter::new(t, &move |s: &Term| visited_rc.borrow().contains(s))
+        {
+            if self.visited.borrow().contains(&c) {
+                continue;
+            }
             match check(&c) {
-                Sort::Bool => { self.embed_bool(c.clone())?; }
-                Sort::Field(_) => { self.embed_pf(c.clone())?; }
-                Sort::BitVector(_) => { self.embed_bv(c.clone())?; }
+                Sort::Bool => {
+                    self.embed_bool(c.clone())?;
+                }
+                Sort::Field(_) => {
+                    self.embed_pf(c.clone())?;
+                }
+                Sort::BitVector(_) => {
+                    self.embed_bv(c.clone())?;
+                }
                 Sort::Tuple(_) => panic!("Tuple embedding not implemented"),
                 s => panic!("embed unimplemented for {:?}", s),
             }
@@ -332,14 +382,17 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
     fn embed_bool(&mut self, c: Term) -> Result<&AssignedBit<F>, Error> {
         if !self.cache.contains_key(&c) {
             let w = match c.op() {
-                Op::Var(_) => { panic!("call embed_var for variables") }
+                Op::Var(_) => {
+                    panic!("call embed_var for variables")
+                }
                 Op::Const(v) => {
                     let b = v.as_bool();
                     AssignedTerm::Bit(self.std.assign(self.lay, self.as_value(b))?)
                 }
                 Op::Eq => {
                     // equality is sort-driven
-                    let a = &c.cs()[0]; let b = &c.cs()[1];
+                    let a = &c.cs()[0];
+                    let b = &c.cs()[1];
                     match check(a) {
                         Sort::Bool => {
                             let ab = self.get_bit(a).unwrap().clone();
@@ -368,7 +421,7 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                             }
                             AssignedTerm::Bit(self.nary_and(&bits)?)
                         }
-                         s => panic!("Unsupported sort in embed_bool: {:?}", s),
+                        s => panic!("Unsupported sort in embed_bool: {:?}", s),
                     }
                 }
                 Op::Ite => {
@@ -393,10 +446,14 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                     AssignedTerm::Bit(self.nary_or(&[not_a, b])?)
                 }
                 Op::BoolNaryOp(o) => {
-                    let args: Vec<AssignedBit<F>> = c.cs().iter().map(|t| self.get_bit(t).unwrap().clone()).collect();
+                    let args: Vec<AssignedBit<F>> = c
+                        .cs()
+                        .iter()
+                        .map(|t| self.get_bit(t).unwrap().clone())
+                        .collect();
                     match o {
                         BoolNaryOp::And => AssignedTerm::Bit(self.nary_and(&args)?),
-                        BoolNaryOp::Or  => AssignedTerm::Bit(self.nary_or(&args)?),
+                        BoolNaryOp::Or => AssignedTerm::Bit(self.nary_or(&args)?),
                         BoolNaryOp::Xor => AssignedTerm::Bit(self.nary_xor(&args)?),
                     }
                 }
@@ -423,8 +480,9 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                 Op::Var(_) => panic!("call embed_var for vars"),
                 Op::Const(v) => {
                     let fv = v.as_pf().as_ty_ref(self.cfg.field());
-                    let fv : Integer= fv.i();
-                    let fv_biguint = BigUint::from_bytes_be(&fv.to_digits::<u8>(rug::integer::Order::MsfBe));
+                    let fv: Integer = fv.i();
+                    let fv_biguint =
+                        BigUint::from_bytes_be(&fv.to_digits::<u8>(rug::integer::Order::MsfBe));
                     let fv_bytes: [u8; 32] = fv_biguint.to_bytes_be().try_into().unwrap();
                     let fv_f = F::from_bytes_be(&fv_bytes).unwrap();
                     AssignedTerm::Field(self.std.assign(self.lay, Value::known(fv_f))?)
@@ -437,7 +495,8 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                 }
                 Op::PfNaryOp(PfNaryOp::Add) => {
                     // First, collect all the arguments as AssignedNative<F>
-                    let args: Vec<AssignedNative<F>> = c.cs()
+                    let args: Vec<AssignedNative<F>> = c
+                        .cs()
                         .iter()
                         .map(|t| self.get_field(t).map(|x| x.clone()))
                         .collect::<Result<_, _>>()?;
@@ -448,7 +507,8 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                     AssignedTerm::Field(sum)
                 }
                 Op::PfNaryOp(PfNaryOp::Mul) => {
-                    let args: Vec<AssignedNative<F>> = c.cs()
+                    let args: Vec<AssignedNative<F>> = c
+                        .cs()
                         .iter()
                         .map(|t| self.get_field(t).map(|x| x.clone()))
                         .collect::<Result<_, _>>()?;
@@ -487,8 +547,12 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
     }
 
     fn embed_bv(&mut self, bv: Term) -> Result<(), Error> {
-        let Sort::BitVector(n) = check(&bv) else { panic!("embed_bv expects bv") };
-        if self.cache.contains_key(&bv) { return Ok(()) }
+        let Sort::BitVector(n) = check(&bv) else {
+            panic!("embed_bv expects bv")
+        };
+        if self.cache.contains_key(&bv) {
+            return Ok(());
+        }
 
         let assigned = match bv.op() {
             Op::Var(_) => panic!("call embed_var for vars"),
@@ -500,7 +564,11 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                     let bit = b.uint().get_bit(i as u32) != false;
                     bits.push(self.std.assign(self.lay, self.as_value(bit))?);
                 }
-                AssignedTerm::Bv { width: n, bits, uint: None }
+                AssignedTerm::Bv {
+                    width: n,
+                    bits,
+                    uint: None,
+                }
             }
             Op::Ite => {
                 // ITE at field level then bitify
@@ -509,41 +577,77 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                 let f = self.get_bv_uint(&bv.cs()[2])?;
                 let u = self.ite_field(&cond, &t, &f)?;
                 let bits = self.bitify(&u, n, true)?;
-                AssignedTerm::Bv { width: n, bits, uint: Some(u) }
+                AssignedTerm::Bv {
+                    width: n,
+                    bits,
+                    uint: Some(u),
+                }
             }
             Op::BvNaryOp(o) => {
                 match o {
                     BvNaryOp::Xor | BvNaryOp::And | BvNaryOp::Or => {
-                        let all: Vec<Vec<AssignedBit<F>>> = bv.cs().iter().map(|t| self.get_bv_bits(t).unwrap()).collect();
+                        let all: Vec<Vec<AssignedBit<F>>> = bv
+                            .cs()
+                            .iter()
+                            .map(|t| self.get_bv_bits(t).unwrap())
+                            .collect();
                         let w = all[0].len();
                         let mut out = Vec::with_capacity(w);
                         for i in 0..w {
-                            let slice: Vec<AssignedBit<F>> = all.iter().map(|v| v[i].clone()).collect();
+                            let slice: Vec<AssignedBit<F>> =
+                                all.iter().map(|v| v[i].clone()).collect();
                             let b = match o {
                                 BvNaryOp::And => self.nary_and(&slice)?,
-                                BvNaryOp::Or  => self.nary_or(&slice)?,
+                                BvNaryOp::Or => self.nary_or(&slice)?,
                                 BvNaryOp::Xor => self.nary_xor(&slice)?,
-                                _ => unreachable!()
+                                _ => unreachable!(),
                             };
                             out.push(b);
                         }
-                        AssignedTerm::Bv { width: w, bits: out, uint: None }
+                        AssignedTerm::Bv {
+                            width: w,
+                            bits: out,
+                            uint: None,
+                        }
                     }
                     BvNaryOp::Add => {
                         // fold fields + bitify/truncate
-                        let inputs: Vec<AssignedNative<F>> = bv.cs().iter().map(|t| self.get_bv_uint(t).unwrap()).collect();
-                        let sum = inputs.into_iter().reduce(|a, b| self.add(&a, &b).unwrap()).unwrap();
-                        let mut bits = self.bitify(&sum, n + bitsize(bv.cs().len().saturating_sub(1)), true)?;
+                        let inputs: Vec<AssignedNative<F>> = bv
+                            .cs()
+                            .iter()
+                            .map(|t| self.get_bv_uint(t).unwrap())
+                            .collect();
+                        let sum = inputs
+                            .into_iter()
+                            .reduce(|a, b| self.add(&a, &b).unwrap())
+                            .unwrap();
+                        let mut bits =
+                            self.bitify(&sum, n + bitsize(bv.cs().len().saturating_sub(1)), true)?;
                         bits.truncate(n);
-                        AssignedTerm::Bv { width: n, bits, uint: Some(sum) }
+                        AssignedTerm::Bv {
+                            width: n,
+                            bits,
+                            uint: Some(sum),
+                        }
                     }
                     BvNaryOp::Mul => {
-                        let inputs: Vec<AssignedNative<F>> = bv.cs().iter().map(|t| self.get_bv_uint(t).unwrap()).collect();
-                        let prod = inputs.into_iter().reduce(|a, b| self.mul(&a, &b).unwrap()).unwrap();
+                        let inputs: Vec<AssignedNative<F>> = bv
+                            .cs()
+                            .iter()
+                            .map(|t| self.get_bv_uint(t).unwrap())
+                            .collect();
+                        let prod = inputs
+                            .into_iter()
+                            .reduce(|a, b| self.mul(&a, &b).unwrap())
+                            .unwrap();
                         // truncate to n
-                        let mut bits = self.bitify(&prod, 2*n, true)?;
+                        let mut bits = self.bitify(&prod, 2 * n, true)?;
                         bits.truncate(n);
-                        AssignedTerm::Bv { width: n, bits, uint: Some(prod) }
+                        AssignedTerm::Bv {
+                            width: n,
+                            bits,
+                            uint: Some(prod),
+                        }
                     }
                 }
             }
@@ -558,7 +662,11 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                         let diff = self.sub(&a_plus_mod, &b)?;
                         let mut bits = self.bitify(&diff, n + 1, true)?;
                         bits.truncate(n);
-                        AssignedTerm::Bv { width: n, bits, uint: Some(diff) }
+                        AssignedTerm::Bv {
+                            width: n,
+                            bits,
+                            uint: Some(diff),
+                        }
                     }
                     BvBinOp::Shl => {
                         // TODO: variable shift with select/hardening.
@@ -570,7 +678,11 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                             let mut bits = self.bitify(&mul, n + sh + 1, true)?;
                             bits.drain(0..sh); // left shift
                             bits.truncate(n);
-                            AssignedTerm::Bv { width: n, bits, uint: Some(mul) }
+                            AssignedTerm::Bv {
+                                width: n,
+                                bits,
+                                uint: Some(mul),
+                            }
                         } else {
                             panic!("Bv Shl by non-const: TODO (use layered select gadget)");
                         }
@@ -584,16 +696,28 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                             let mut out = vec![self.std.assign(self.lay, self.as_value(false))?; n];
                             if *o == BvBinOp::Lshr {
                                 for i in 0..n {
-                                    out[i] = if i + sh < n { bits[i + sh].clone() } else { self.std.assign(self.lay, self.as_value(false))? };
+                                    out[i] = if i + sh < n {
+                                        bits[i + sh].clone()
+                                    } else {
+                                        self.std.assign(self.lay, self.as_value(false))?
+                                    };
                                 }
                             } else {
                                 // arithmetic right shift fills with sign bit
-                                let sign = bits[n-1].clone();
+                                let sign = bits[n - 1].clone();
                                 for i in 0..n {
-                                    out[i] = if i + sh < n { bits[i + sh].clone() } else { sign.clone() };
+                                    out[i] = if i + sh < n {
+                                        bits[i + sh].clone()
+                                    } else {
+                                        sign.clone()
+                                    };
                                 }
                             }
-                            AssignedTerm::Bv { width: n, bits: out, uint: None }
+                            AssignedTerm::Bv {
+                                width: n,
+                                bits: out,
+                                uint: None,
+                            }
                         } else {
                             panic!("Bv Rshift by non-const: TODO");
                         }
@@ -609,21 +733,37 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                 for c in bv.cs().iter().rev() {
                     bits.extend_from_slice(&self.get_bv_bits(c).unwrap());
                 }
-                AssignedTerm::Bv { width: bits.len(), bits, uint: None }
+                AssignedTerm::Bv {
+                    width: bits.len(),
+                    bits,
+                    uint: None,
+                }
             }
             Op::BvExtract(hi, lo) => {
                 let base = self.get_bv_bits(&bv.cs()[0])?;
-                let mut out = base[*lo as usize ..= *hi as usize].to_vec();
-                AssignedTerm::Bv { width: out.len(), bits: out, uint: None }
+                let mut out = base[*lo as usize..=*hi as usize].to_vec();
+                AssignedTerm::Bv {
+                    width: out.len(),
+                    bits: out,
+                    uint: None,
+                }
             }
             Op::PfToBv(nbits) => {
                 let x = self.get_field(&bv.cs()[0])?.clone();
                 let bits = self.bitify(&x, *nbits, true)?;
-                AssignedTerm::Bv { width: *nbits, bits, uint: Some(x) }
+                AssignedTerm::Bv {
+                    width: *nbits,
+                    bits,
+                    uint: Some(x),
+                }
             }
             Op::BoolToBv => {
                 let b = self.get_bit(&bv.cs()[0]).unwrap().clone();
-                AssignedTerm::Bv { width: 1, bits: vec![b], uint: None }
+                AssignedTerm::Bv {
+                    width: 1,
+                    bits: vec![b],
+                    uint: None,
+                }
             }
             other => panic!("embed_bv unsupported op {}", other),
         };
@@ -636,7 +776,9 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
     // -------------------------
 
     fn get_field(&mut self, t: &Term) -> Result<&AssignedNative<F>, Error> {
-        if !self.cache.contains_key(t) { self.embed(t.clone())?; }
+        if !self.cache.contains_key(t) {
+            self.embed(t.clone())?;
+        }
         match self.cache.get(t) {
             Some(AssignedTerm::Field(x)) => Ok(x),
             Some(AssignedTerm::Bv { uint: Some(u), .. }) => Ok(u),
@@ -652,7 +794,9 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
     }
 
     fn get_bv_bits(&mut self, t: &Term) -> Result<Vec<AssignedBit<F>>, Error> {
-        if !self.cache.contains_key(t) { self.embed_bv(t.clone())?; }
+        if !self.cache.contains_key(t) {
+            self.embed_bv(t.clone())?;
+        }
         match self.cache.get(t) {
             Some(AssignedTerm::Bv { bits, .. }) => Ok(bits.clone()),
             _ => panic!("Expected BV for {}", t),
@@ -660,7 +804,9 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
     }
 
     fn get_bv_uint(&mut self, t: &Term) -> Result<AssignedNative<F>, Error> {
-        if !self.cache.contains_key(t) { self.embed_bv(t.clone())?; }
+        if !self.cache.contains_key(t) {
+            self.embed_bv(t.clone())?;
+        }
         // Scope for the first mutable borrow
         let (needs_compute, bits_cloned) = match self.cache.get_mut(t) {
             Some(AssignedTerm::Bv { bits, uint, .. }) => {
@@ -673,7 +819,7 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         };
         // Now, outside the borrow, do the computation if needed
         if needs_compute {
-            let u = self.debitify(&bits_cloned, /*signed=*/false)?;
+            let u = self.debitify(&bits_cloned, /*signed=*/ false)?;
             // Now re-borrow to set the cache
             if let Some(AssignedTerm::Bv { uint, .. }) = self.cache.get_mut(t) {
                 *uint = Some(u.clone());
@@ -718,7 +864,7 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
             Ok(())
         } else if let Op::PfFitsInBits(n) = t.op() {
             let x = self.get_field(&t.cs()[0])?.clone();
-            let _ = self.bitify(&x, *n, /*enforce_canonical=*/true)?;
+            let _ = self.bitify(&x, *n, /*enforce_canonical=*/ true)?;
             Ok(())
         } else {
             self.embed_bool(t.clone())?;
@@ -733,13 +879,19 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
 // -----------------------------
 
 fn bitsize(n: usize) -> usize {
-    if n == 0 { 1 } else { (n as f64).log2().ceil() as usize }
+    if n == 0 {
+        1
+    } else {
+        (n as f64).log2().ceil() as usize
+    }
 }
 
 fn big_pow2(n: usize) -> F {
     // NOTE: in real code, use a robust BigInt->F conversion that handles mod reduction
     let mut acc = F::from(1);
-    for _ in 0..n { acc = acc + acc; }
+    for _ in 0..n {
+        acc = acc + acc;
+    }
     acc
 }
 
@@ -758,8 +910,8 @@ pub struct IrRelation<'a> {
 }
 
 impl<'a> m::Relation for IrRelation<'a> {
-    type Instance = Vec<F>;        // raw scalars (public inputs in same order as public_names)
-    type Witness  = Vec<F>;        // all inputs in cs.metadata.ordered_input_names() order
+    type Instance = Vec<F>; // raw scalars (public inputs in same order as public_names)
+    type Witness = Vec<F>; // all inputs in cs.metadata.ordered_input_names() order
 
     fn format_instance(instance: &Self::Instance) -> Vec<F> {
         instance.clone()
@@ -772,22 +924,33 @@ impl<'a> m::Relation for IrRelation<'a> {
         instance: Value<Self::Instance>,
         witness: Value<Self::Witness>,
     ) -> Result<(), Error> {
-        // materialize the Value<>s
-        let pi_vec: Vec<_> = instance.transpose_vec(self.public_names.len());
-        let wit_vec: Vec<_> = witness.transpose_vec(self.all_names.len());
+        // keep them as Value<F>; don't "materialize"
+        let pi_vec: Vec<Value<F>> = instance.transpose_vec(self.public_names.len());
+        let wit_vec: Vec<Value<F>> = witness.transpose_vec(self.all_names.len());
 
-        // name -> value maps
-        let imap: HashMap<String, F> = self.public_names.iter().cloned().zip(pi_vec.into_iter()).collect();
-        let wmap: HashMap<String, F> = self.all_names.iter().cloned().zip(wit_vec.into_iter()).collect();
+        // name -> Value<F> maps
+        let imap: HashMap<String, Value<F>> = self
+            .public_names
+            .iter()
+            .cloned()
+            .zip(pi_vec.into_iter())
+            .collect();
+        let wmap: HashMap<String, Value<F>> = self
+            .all_names
+            .iter()
+            .cloned()
+            .zip(wit_vec.into_iter())
+            .collect();
 
         let used_vars: HashSet<String> =
             extras::free_variables(term(Op::Tuple, self.cs.outputs.clone()))
                 .into_iter()
                 .collect();
 
+        let mut binding = layouter.namespace(|| "IR->Midnight");
         let mut ctx = ToMidnight::new(
             std_lib,
-            &mut layouter.namespace(|| "IR->Midnight"),
+            &mut binding,
             self.cfg,
             used_vars,
             &wmap,
@@ -818,9 +981,14 @@ impl<'a> m::Relation for IrRelation<'a> {
         m::ZkStdLibArch::default()
     }
 
-    fn write_relation<W: std::io::Write>(&self, _writer: &mut W) -> std::io::Result<()> { Ok(()) }
+    fn write_relation<W: std::io::Write>(&self, _writer: &mut W) -> std::io::Result<()> {
+        Ok(())
+    }
     fn read_relation<R: std::io::Read>(_reader: &mut R) -> std::io::Result<Self> {
-        Err(std::io::Error::new(std::io::ErrorKind::Other, "IrRelation::read not supported; build from Computation"))
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "IrRelation::read not supported; build from Computation",
+        ))
     }
 }
 
@@ -829,11 +997,18 @@ impl<'a> m::Relation for IrRelation<'a> {
 // -------------------------------------
 
 pub fn to_midnight_relation<'a>(cs: &'a Computation, cfg: &'a CircCfg) -> IrRelation<'a> {
-    let public_names: Vec<String> = cs.metadata.interactive_vars()
+    let public_names: Vec<String> = cs
+        .metadata
+        .interactive_vars()
         .instances
         .iter()
         .map(|t| t.as_var_name().to_owned())
         .collect();
     let all_names = cs.metadata.ordered_input_names();
-    IrRelation { cs, cfg, public_names, all_names }
+    IrRelation {
+        cs,
+        cfg,
+        public_names,
+        all_names,
+    }
 }
