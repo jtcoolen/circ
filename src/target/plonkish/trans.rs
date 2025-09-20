@@ -1681,7 +1681,7 @@ impl<'cfg> ToPlonk<'cfg> {
     fn bv_greater(&mut self, a: Wire, b: Wire, n: usize, strict: bool) -> Wire {
         let n = if n >= 254 { 254 } else { n };
         let tweak = if strict { -1 } else { 0 };
-        let shift_val = self.field.new_v((Integer::from(1) << n));
+        let shift_val = self.field.new_v(Integer::from(1) << n);
         let shift_wire = self.const_wire(shift_val);
         let tweak_wire = self.const_wire(self.field.new_v(tweak));
 
@@ -2457,7 +2457,6 @@ impl<'cfg> ToPlonk<'cfg> {
                             "UndefinedFnCall '{}' not implemented in embed_pf",
                             call.name
                         );
-                        self.plonk.zero_wire()
                     }
                 }
                 _op => panic!("Non-field in embed_pf: {}, op: {}", c, _op),

@@ -11,6 +11,8 @@ pub mod smt;
 
 pub mod plonkish;
 
+pub mod halo2;
+
 /// Returns the number of bits needed to hold `n`.
 pub fn bitsize(mut n: usize) -> usize {
     let mut acc = 0;
