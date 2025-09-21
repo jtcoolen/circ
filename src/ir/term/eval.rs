@@ -5,11 +5,62 @@ use super::{
     BvUnOp, FieldToBv, FxHashMap, IntBinOp, IntBinPred, IntNaryOp, IntUnOp, Integer, Node, Op,
     PfNaryOp, PfUnOp, Sort, Term, TermMap, Value,
 };
-use crate::cfg::cfg_or_default;
-
-use circ_fields::{FieldT, FieldV};
-
 use log::trace;
+
+use crate::cfg::cfg_or_default;
+use circ_fields::{FieldT, FieldV};
+use once_cell::sync::Lazy;
+use rug::integer::Order;
+
+// ✅ Use the SAME ff traits that midnight/halo2curves uses
+use midnight_circuits::halo2curves::ff::{Field, PrimeField};
+
+use midnight_circuits::hash::poseidon::{round_skips::PreComputedRoundCPU, PoseidonChip};
+use midnight_circuits::instructions::hash::HashCPU;
+
+type F = midnight_curves::Fq;
+const WIDTH: usize = PoseidonChip::<F>::register_size();
+static POSEIDON_PRE: Lazy<PreComputedRoundCPU<F>> = Lazy::new(PreComputedRoundCPU::init);
+
+// ---------- FieldV <-> F helpers (ff 0.13) ----------
+
+fn pf_to_f(x: &FieldV) -> F {
+    // Decimal -> field element (reduced mod p). Provided by ff 0.13 PrimeField.
+    F::from_str_vartime(&x.i().to_string()).expect("invalid scalar for F")
+}
+
+fn f_to_pf(fty: &FieldT, x: &F) -> FieldV {
+    // Canonical little-endian bytes -> big integer -> IR FieldV
+    let repr = x.to_repr(); // needs PrimeField in scope
+    let n = Integer::from_digits(repr.as_ref(), Order::Lsf);
+    fty.new_v(n)
+}
+// Recursively flatten a Value into a Vec<FieldV>, accepting:
+//   - Field
+//   - Tuple of Fields (how arrays are often lowered in your pipeline)
+//   - Array of Fields
+fn push_fields_from_value(v: &crate::ir::term::Value, out: &mut Vec<crate::ir::term::Value>) {
+    use crate::ir::term::Value;
+    match v {
+        Value::Field(_) => out.push(v.clone()),
+        Value::Tuple(ts) => {
+            for t in ts {
+                push_fields_from_value(t, out);
+            }
+        }
+        Value::Array(a) => {
+            let iter = a.key_sort.clone().elems_iter_values().take(a.size);
+            for idxval in iter {
+                let el = a.select(&idxval);
+                push_fields_from_value(&el, out);
+            }
+        }
+        other => panic!(
+            "midnight_poseidon: expected Field or tuple/array of Fields, got {:?}",
+            other.sort()
+        ),
+    }
+}
 
 /// Recursively the term `t`, using variable values in `h` and storing intermediate evaluations in
 /// the cache `vs`.
@@ -358,7 +409,67 @@ pub fn eval_op(op: &Op, args: &[&Value], var_vals: &FxHashMap<String, Value>) ->
         }
         Op::ExtOp(o) => o.eval(args),
 
-        //Op::UndefinedFnCall(_) => (),
+        Op::UndefinedFnCall(call) => {
+            match call.name.as_str() {
+                "PlonkMul2" => {
+                    assert!(
+                        args.len() == 1,
+                        "PlonkMul2 expects 1 argument, got {}",
+                        args.len()
+                    );
+                    let x = args[0].as_pf().clone(); // FieldV
+                    let sq = x.clone() * x.clone(); // a^2
+                    Value::Field(sq + x) // a^2 + a
+                }
+
+                "midnight_poseidon" | "poseidon" => {
+                    // 1) Flatten inputs (tuple/array/field) to a linear Vec<FieldV>
+                    let mut flat_vals: Vec<crate::ir::term::Value> = Vec::new();
+                    for a in args {
+                        push_fields_from_value(a, &mut flat_vals);
+                    }
+                    assert!(
+                        !flat_vals.is_empty(),
+                        "midnight_poseidon: need at least one Field input"
+                    );
+
+                    // 2) Ensure all fields are the same type; capture that type for the result
+                    let mut fty_opt: Option<crate::ir::term::FieldT> = None;
+                    let mut field_vs = Vec::with_capacity(flat_vals.len());
+                    for v in flat_vals {
+                        let f = v.as_pf().clone();
+                        if let Some(fty) = &fty_opt {
+                            assert_eq!(
+                                f.ty(),
+                                *fty,
+                                "midnight_poseidon: mixed field types in inputs"
+                            );
+                        } else {
+                            fty_opt = Some(f.ty());
+                        }
+                        field_vs.push(f);
+                    }
+                    let out_fty = fty_opt.expect("unreachable: nonempty");
+
+                    let inputs_f: Vec<F> = field_vs.iter().map(pf_to_f).collect();
+
+                    let out_pf = PoseidonChip::hash(&inputs_f);
+
+                    // 2) Grab the IR field type from the first input (all should share the same type)
+                    let fty: FieldT = field_vs[0].ty().clone();
+
+                    // 3) Convert F -> FieldV and wrap into Value::Field
+                    let out_v: FieldV = f_to_pf(&fty, &out_pf);
+
+                    crate::ir::term::Value::Field(out_v)
+                }
+
+                other => {
+                    panic!("UndefinedFnCall '{}' not implemented in interpreter", other);
+                }
+            }
+        }
+
         o => unimplemented!("eval: {:?}", o),
     }
 }
