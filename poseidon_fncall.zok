@@ -5,6 +5,6 @@ def main(private field x) -> field :
     field y = PlonkMul2(x)
 
     field result = poseidon([x])
-    field result2 = midnight_poseidon([result, x, x])
+    field result2 = midnight_poseidon([result, y, x])
 
-    return result2
+    return result2/result
