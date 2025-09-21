@@ -4,10 +4,12 @@
 use crate::cfg::CircCfg;
 use crate::ir::term::*;
 use crate::target::plonkish::VarType;
+use ark_std::iterable::Iterable;
 use im::HashSet;
 use log::{debug, trace};
 use num_bigint::BigUint;
 use num_traits::Num;
+use rsmt2::print::FunDef;
 use rug::Integer;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -179,6 +181,10 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
     fn assert_boolean(&mut self, b: &AssignedBit<F>) -> Result<(), Error> {
         // AssignedBit is boolean by construction; if sourced from field, convert & recheck.
         Ok(())
+    }
+
+    fn poseidon_hash(&mut self, input: &[AssignedNative<F>]) -> Result<AssignedNative<F>, Error> {
+        self.std.poseidon(self.lay, input)
     }
 
     // -------------------------
@@ -382,7 +388,15 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                 Sort::BitVector(_) => {
                     self.embed_bv(c.clone())?;
                 }
-                Sort::Tuple(_) => panic!("Tuple embedding not implemented"),
+                // Treat tuples as containers: embed children, don't allocate a tuple wire.
+                Sort::Tuple(_items) => {
+                    // Just ensure all elements are embedded; parent ops (like poseidon)
+                    // will read the children directly (e.g., via `c.cs()`).
+                    for ch in c.cs() {
+                        self.embed(ch.clone())?;
+                    }
+                    // No caching for tuples; we still mark this node as visited below.
+                }
                 s => panic!("embed unimplemented for {:?}", s),
             }
             self.visited.borrow_mut().insert(c);
@@ -550,6 +564,87 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                     let inv = self.std.inv(self.lay, &x)?;
                     AssignedTerm::Field(self.mul(&y, &inv)?)
                 }
+                Op::UndefinedFnCall(call) => {
+                    // The return of Poseidon is a field element.
+                    if !matches!(call.ret_sort, Sort::Field(_)) {
+                        panic!(
+                            "UndefinedFnCall '{}' returns non-field sort in embed_pf: {}",
+                            call.name, call.ret_sort
+                        );
+                    }
+
+                    // Children (actual args in the term) and their declared sorts
+                    let arg_terms = c.cs();
+
+                    // ---- Helper to flatten args into Vec<AssignedNative<F>> ----
+                    // Accepts: Field, Array(Field, _), or Tuple of Fields (e.g. lowered array literals).
+                    let mut flatten_field_args =
+                        |terms: &[Term], sorts: &[Sort]| -> Result<Vec<AssignedNative<F>>, Error> {
+                            let mut out = Vec::<AssignedNative<F>>::new();
+
+                            for (i, t) in terms.iter().enumerate() {
+                                match &sorts[i] {
+                                    // Single field
+                                    Sort::Field(_) => {
+                                        out.push(self.get_field(t)?.clone());
+                                    }
+
+                                    // Array of fields
+                                    Sort::Array(inner) => {
+                                        if !matches!(inner.key, Sort::Field(_)) {
+                                            panic!(
+                                                "Poseidon: array arg {} must have element sort Field, got {}",
+                                                i, inner.key
+                                            );
+                                        }
+                                        for e in t.cs() {
+                                            out.push(self.get_field(&e)?.clone());
+                                        }
+                                    }
+
+                                    other => {
+                                        panic!(
+                                            "Poseidon: unsupported arg sort at index {}: {} (expected Field, Array(Field,_), or Tuple(Field,...))",
+                                            i, other
+                                        );
+                                    }
+                                }
+                            }
+
+                            Ok(out)
+                        };
+
+                    match call.name.as_str() {
+                        // keep your demo op if you want
+                        "PlonkMul2" => {
+                            if arg_terms.len() != 1 {
+                                panic!("PlonkMul2 expects 1 argument, got {}", arg_terms.len());
+                            }
+                            let a = self.get_field(&arg_terms[0])?.clone();
+                            let aa = self.mul(&a, &a)?; // a^2
+                            let aa = self.add(&aa, &a)?; // a^2 + a
+                            AssignedTerm::Field(aa)
+                        }
+
+                        // Poseidon(hash over a flat vector of fields). Accepts [x], (x), x, or mixed.
+                        "midnight_poseidon" => {
+                            let inputs = flatten_field_args(&arg_terms, &call.arg_sorts)?;
+                            if inputs.is_empty() {
+                                panic!("midnight_poseidon: need at least one field input");
+                            }
+
+                            // Use your Poseidon chip wrapper (as you wired it in this translator).
+                            // This should internally route to ZkStdLib::poseidon with the configured chip.
+                            let h = self.poseidon_hash(&inputs)?;
+                            AssignedTerm::Field(h)
+                        }
+
+                        other => {
+                            panic!("UndefinedFnCall '{}' not implemented in embed_pf", other);
+                        }
+                    }
+                }
+
                 other => panic!("embed_pf unsupported op {}", other),
             };
             self.cache.insert(c.clone(), w);
