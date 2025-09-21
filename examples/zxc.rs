@@ -2773,6 +2773,7 @@ fn main() {
     use midnight_curves::Fq as F;
     use midnight_proofs::poly::kzg::params::ParamsKZG;
 
+    // TODO hook up witness generation tool (zxi interpreter)
     let mut assign: HashMap<String, F> = HashMap::new();
     assign.insert("x".into(), f_from_dec("1"));
     assign.insert(

@@ -358,6 +358,7 @@ pub fn eval_op(op: &Op, args: &[&Value], var_vals: &FxHashMap<String, Value>) ->
         }
         Op::ExtOp(o) => o.eval(args),
 
+        //Op::UndefinedFnCall(_) => (),
         o => unimplemented!("eval: {:?}", o),
     }
 }

@@ -495,6 +495,20 @@ pub fn rec_check_raw_helper(oper: &Op, a: &[&Sort]) -> Result<Sort, TypeErrorRea
             .map(|_| s.clone()),
         (Op::PfToBoolTrusted, &[k]) => pf_or(k, "pf to bool argument").map(|_| Sort::Bool),
         (Op::ExtOp(o), _) => o.check(a),
+        (Op::UndefinedFnCall(c), act_args) => {
+            // TODO check the type checking correct
+            if c.arg_sorts.len() != act_args.len() {
+                Err(TypeErrorReason::ExpectedArgs(
+                    c.arg_sorts.len(),
+                    act_args.len(),
+                ))
+            } else {
+                for (e, a) in c.arg_sorts.iter().zip(act_args) {
+                    eq_or(e, a, "in undefined function call")?;
+                }
+                Ok(c.ret_sort.clone())
+            }
+        }
         (_, _) => Err(TypeErrorReason::Custom("other".to_string())),
     }
 }
