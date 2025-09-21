@@ -1,10 +1,19 @@
 from "./poseidon.zok" import main as poseidon
+struct Bar<N> {
+    field[N] c
+    bool d
+}
 
+struct Pt {
+    field x
+    field y
+}
 
-def main(private field x) -> field :
-    field y = PlonkMul2(x)
+def main(private Pt v) -> field :
+    field z = PlonkMul2(v.x)
 
-    field result = poseidon([x])
-    field result2 = midnight_poseidon([result, y, x])
+    field result = poseidon([v.y])
+    field result2 = midnight_poseidon([result, z, v.x])
+
 
     return result2/result

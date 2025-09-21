@@ -2775,10 +2775,11 @@ fn main() {
 
     // TODO hook up witness generation tool (zxi interpreter)
     let mut assign: HashMap<String, F> = HashMap::new();
-    assign.insert("x".into(), f_from_dec("1"));
+    assign.insert("v.x".into(), f_from_dec("1"));
+    assign.insert("v.y".into(), f_from_dec("2"));
     assign.insert(
         "return".into(),
-        f_from_dec("50929928256716029474367497881070759424030144625773770192315627573532056604829"),
+        f_from_dec("12648199851421323489665712353432219719360195185830732427443650224407112195945"),
     );
 
     // 1) Build the relation wrapper
