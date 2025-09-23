@@ -2803,6 +2803,7 @@ fn main() {
     let relation: circ::target::halo2::trans::IrRelation<'_> =
         to_midnight_relation(&cs.get("main"), cfg());
 
+
     let instance: Vec<InputValue> = relation
         .public_names
         .iter()
