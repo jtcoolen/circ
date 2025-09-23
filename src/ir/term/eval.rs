@@ -8,9 +8,11 @@ use super::{
 use log::trace;
 
 use crate::cfg::cfg_or_default;
+use crate::ir::opt::sha;
 use circ_fields::{FieldT, FieldV};
 use once_cell::sync::Lazy;
 use rug::integer::Order;
+use sha2::{Digest, Sha256};
 
 // ✅ Use the SAME ff traits that midnight/halo2curves uses
 use midnight_circuits::halo2curves::ff::PrimeField;
@@ -42,7 +44,7 @@ fn f_to_pf(fty: &FieldT, x: &F) -> FieldV {
 fn push_fields_from_value(v: &crate::ir::term::Value, out: &mut Vec<crate::ir::term::Value>) {
     use crate::ir::term::Value;
     match v {
-        Value::Field(_) => out.push(v.clone()),
+        Value::Field(_) | Value::BitVector(_) => out.push(v.clone()),
         Value::Tuple(ts) => {
             for t in ts {
                 push_fields_from_value(t, out);
@@ -56,7 +58,7 @@ fn push_fields_from_value(v: &crate::ir::term::Value, out: &mut Vec<crate::ir::t
             }
         }
         other => panic!(
-            "midnight_poseidon: expected Field or tuple/array of Fields, got {:?}",
+            "push_fields_from_value: expected Field or tuple/array of Fields, got {:?}",
             other.sort()
         ),
     }
@@ -422,7 +424,7 @@ pub fn eval_op(op: &Op, args: &[&Value], var_vals: &FxHashMap<String, Value>) ->
                     Value::Field(sq + x) // a^2 + a
                 }
 
-                "midnight_poseidon" | "poseidon" => {
+                "midnight_poseidon" => {
                     // 1) Flatten inputs (tuple/array/field) to a linear Vec<FieldV>
                     let mut flat_vals: Vec<crate::ir::term::Value> = Vec::new();
                     for a in args {
@@ -461,6 +463,45 @@ pub fn eval_op(op: &Op, args: &[&Value], var_vals: &FxHashMap<String, Value>) ->
                     let out_v: FieldV = f_to_pf(&fty, &out_pf);
 
                     crate::ir::term::Value::Field(out_v)
+                }
+
+                "midnight_sha256" => {
+                    // 1) Flatten inputs (tuple/array/field) to a linear Vec<FieldV>
+                    let mut flat_vals: Vec<crate::ir::term::Value> = Vec::new();
+                    for a in args {
+                        push_fields_from_value(a, &mut flat_vals);
+                    }
+                    assert!(
+                        !flat_vals.is_empty(),
+                        "midnight_sha256: need at least one Field input"
+                    );
+
+                    // 2) Ensure all fields are the same type; capture that type for the result
+                    let mut fty_opt: Option<crate::ir::term::FieldT> = None;
+                    let mut u8_vs = Vec::with_capacity(flat_vals.len());
+                    for v in flat_vals {
+                        let f = v.as_bv().clone();
+
+                        u8_vs.push(f.uint().to_u8().unwrap());
+                    }
+
+                    let mut hasher = Sha256::new();
+                    hasher.update(&u8_vs);
+                    let out: [u8; 32] = hasher.finalize().into();
+
+                    let items = out
+                        .iter()
+                        .map(|b| {
+                            crate::ir::term::Value::BitVector(BitVector::new(Integer::from(*b), 8))
+                        })
+                        .collect::<Vec<Value>>();
+
+                    // TODO check key_sort correct
+                    crate::ir::term::Value::Array(Array::from_vec(
+                        Sort::BitVector(64),
+                        Sort::BitVector(8),
+                        items,
+                    ))
                 }
 
                 other => {

@@ -1,9 +1,10 @@
 from "./poseidon.zok" import main as poseidon
+
 struct Bar {
     u8 a
     field b
     field c
-    //u8[32] resu
+    u8[32] resu
 }
 
 struct Pt {
@@ -17,10 +18,10 @@ def main(private Pt v) -> Bar :
     field result = poseidon([v.y])
     field result2 = midnight_poseidon([result, z, v.x])
 
-   // field[1] b = [1]
-   // u8[32] resu = midnight_sha256(b)
+    u8[1] b = [1]
+    u8[32] resu = midnight_sha256(b)
 
     u8 a = 142
     u8 mod = 6
 
-    return Bar { a: a%mod , b: result2, c:result}
+    return Bar { a: a%mod , b: result2, c:result, resu:resu }

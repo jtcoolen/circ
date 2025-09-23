@@ -11,6 +11,7 @@ use crate::circify::{CircError, Circify, Loc, Val};
 use crate::front::proof::PROVER_ID;
 use crate::ir::proof::ConstraintMetadata;
 use crate::ir::term::*;
+use std::sync::Arc;
 
 use fxhash::FxHashMap;
 use log::{debug, info, trace, warn};
@@ -792,7 +793,7 @@ impl<'ast> ZGen<'ast> {
             Ty::Uint(w) => Sort::BitVector(*w as usize),
             Ty::Integer => Sort::Int, // If your IR uses a different name, adjust here.
             // For composite returns, only enable if your Op::UndefinedFnCall supports them:
-            // Ty::Array(n, ity) => Sort::Array(Box::new(ty_to_sort(ity)), *n),
+            Ty::Array(n, ity) => Sort::new_array(Sort::Int, self.ty_to_sort(ity), *n),
             // Ty::Struct(..)   => { /* if supported; otherwise, surface an error */ }
             other => panic!("Unsupported return type for undefined calls: {}", other),
         }
