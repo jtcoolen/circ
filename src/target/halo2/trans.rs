@@ -5,7 +5,6 @@
 use crate::cfg::CircCfg;
 use crate::ir::term::*;
 use crate::target::plonkish::VarType;
-use ark_std::iterable::Iterable;
 use im::HashSet;
 use num_bigint::BigUint;
 use num_traits::{Num, One};
@@ -25,7 +24,7 @@ use midnight_circuits::{
         PublicInputInstructions, ZeroInstructions,
     },
     // Types from the stdlib side
-    types::{AssignedBit, AssignedNative},
+    types::{AssignedBit, AssignedByte, AssignedNative},
 };
 
 use ark_ff::Zero;
@@ -96,6 +95,7 @@ fn be32_from_biguint(n: &BigUint) -> Result<[u8; 32], &'static str> {
 pub enum InputValue {
     Field(F),
     Big(BigUint),
+    Byte(u8),
     Bool(bool),
 }
 
@@ -118,6 +118,7 @@ impl InputValue {
                 //let bytes = bu.to_bytes_be().try_into().unwrap();
                 //F::from_bytes_be(bytes).unwrap()
             }
+            _ => panic!("as_field_or_default"),
         }
     }
     fn as_bool_or_default(&self) -> bool {
@@ -125,6 +126,13 @@ impl InputValue {
             InputValue::Bool(b) => *b,
             InputValue::Field(f) => *f == F::ONE,
             InputValue::Big(bu) => !bu.is_zero(),
+            _ => panic!("as_bool_or_default"),
+        }
+    }
+    fn as_byte_or_default(&self) -> u8 {
+        match self {
+            InputValue::Byte(b) => *b,
+            _ => panic!("as_byte_or_default"),
         }
     }
     fn as_big_or_default(&self) -> BigUint {
@@ -145,6 +153,7 @@ impl InputValue {
                 buf.copy_from_slice(&f.to_bytes_be());
                 BigUint::from_bytes_be(&buf)
             }
+            _ => panic!("as_big_or_default"),
         }
     }
 }
@@ -172,6 +181,8 @@ fn pad_to_64(v: Vec<u8>) -> [u8; 64] {
 enum AssignedTerm {
     Field(AssignedNative<F>),
     Bit(AssignedBit<F>),
+    Byte(AssignedByte<F>),
+    Bytes(Vec<AssignedByte<F>>),
     /// BitVector represented natively as AssignedBigUint with an optional bit cache (LE).
     Bv {
         width: usize,
@@ -197,6 +208,13 @@ impl AssignedTerm {
     fn as_bv(&self) -> (&AssignedBigUint<F>, usize) {
         match self {
             AssignedTerm::Bv { width, big, .. } => (big, *width),
+            _ => panic!("Expected bitvector"),
+        }
+    }
+
+    fn as_byte(&self) -> &AssignedByte<F> {
+        match self {
+            AssignedTerm::Byte(byte) => byte,
             _ => panic!("Expected bitvector"),
         }
     }
@@ -263,6 +281,52 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
 
     fn as_value<T: Clone>(&self, t: T) -> Value<T> {
         Value::known(t)
+    }
+
+    /*/// Coerce a BV(8) term into an AssignedByte<F>:
+    ///   BV(8) --UbvToPf--> Field (0..256) --tag bound--> AssignedByte<F>
+    fn bv8_to_assigned_byte(&mut self, t: &Term) -> Result<AssignedByte<F>, Error> {
+        // Sanity check
+        match check(t) {
+            Sort::BitVector(8) => {}
+            other => panic!("expected BV(8), got {other}"),
+        }
+
+        let res = t.as_bv_opt().unwrap().uint().to_u8();
+        // Mark it as 8-bit bounded (AssignedByte is an AssignedBounded with bound=8)
+        Ok(AssignedByte::<F>::new(res))
+    }*/
+
+    /// Collect bytes from a term:
+    /// accepts BV(8), Tuple(BV(8),...), or Array(BV(8), N).
+    fn collect_bytes(&mut self, t: &Term) -> Result<Vec<AssignedByte<F>>, Error> {
+        match check(t) {
+            Sort::BitVector(8) => Ok(vec![self.get_byte(t).unwrap().clone()]),
+
+            Sort::Tuple(items) => {
+                if !items.iter().all(|s| matches!(s, Sort::BitVector(8))) {
+                    panic!("tuple elements must be BV(8), got {items:?}");
+                }
+                Ok(t.cs()
+                    .iter()
+                    .map(|c| self.get_byte(c).unwrap().clone())
+                    .collect())
+            }
+
+            Sort::Array(a) if matches!(a.val, Sort::BitVector(8)) => {
+                // If your IR materializes array elements as children, this is enough.
+                // If it uses a sparse map, adapt to iterate the domain.
+                Ok(t.cs()
+                    .iter()
+                    .map(|c| self.get_byte(c).unwrap().clone())
+                    .collect())
+            }
+
+            other => panic!(
+                "midnight_sha256: expected bytes (BV(8)/tuple/array), got {}",
+                other
+            ),
+        }
     }
 
     // ----------------------------------------
@@ -450,6 +514,16 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         }
     }
 
+    fn get_bv_byte(&mut self, t: &Term) -> Result<AssignedByte<F>, Error> {
+        if !self.cache.contains_key(t) {
+            self.embed_bv(t.clone())?;
+        }
+        match self.cache.get(t) {
+            Some(AssignedTerm::Byte(b)) => Ok(b.clone()),
+            _ => panic!("Expected BV for {}", t),
+        }
+    }
+
     // ----------------------------------------
     // Embedding: variables, consts, ops
     // ----------------------------------------
@@ -502,6 +576,20 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                     self.std.constrain_as_public_input(self.lay, &x)?;
                 }
                 self.cache.insert(var.clone(), AssignedTerm::Field(x));
+            }
+            Sort::BitVector(8) => {
+                let vv = self
+                    .wmap
+                    .get(&*name)
+                    .or_else(|| self.imap.get(&*name))
+                    .cloned()
+                    .unwrap_or(Value::known(InputValue::Byte(0u8)));
+                let by_val: Value<u8> = vv.map(|iv| iv.as_byte_or_default());
+                let byte = self.std.assign(self.lay, by_val)?;
+                if is_public {
+                    self.std.constrain_as_public_input(self.lay, &byte)?;
+                }
+                self.cache.insert(var.clone(), AssignedTerm::Byte(byte));
             }
             Sort::BitVector(w) => {
                 // Directly assign a BigUint bounded by w bits — no field-bitify path.
@@ -585,6 +673,12 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                             let af = self.get_field(a).unwrap().clone();
                             let bf = self.get_field(b).unwrap().clone();
                             AssignedTerm::Bit(self.are_equal_field(&af, &bf)?)
+                        }
+                        Sort::BitVector(8) => {
+                            // Compare biguints limb-wise (normalized inside gadget).
+                            let ax = self.get_bv_byte(a)?;
+                            let bx = self.get_bv_byte(b)?;
+                            AssignedTerm::Bit(self.std.is_equal(self.lay, &ax, &bx)?)
                         }
                         Sort::BitVector(_) => {
                             // Compare biguints limb-wise (normalized inside gadget).
@@ -726,12 +820,6 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                     AssignedTerm::Field(self.mul(&y, &inv)?)
                 }
                 Op::UndefinedFnCall(call) => {
-                    if !matches!(call.ret_sort, Sort::Field(_)) {
-                        panic!(
-                            "UndefinedFnCall '{}' returns non-field sort in embed_pf: {}",
-                            call.name, call.ret_sort
-                        );
-                    }
                     let arg_terms = c.cs();
 
                     let mut flatten_field_args =
@@ -764,6 +852,13 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
 
                     match call.name.as_str() {
                         "PlonkMul2" => {
+                            if !matches!(call.ret_sort, Sort::Field(_)) {
+                                panic!(
+                                    "UndefinedFnCall '{}' returns non-field sort in embed_pf: {}",
+                                    call.name, call.ret_sort
+                                );
+                            }
+
                             if arg_terms.len() != 1 {
                                 panic!("PlonkMul2 expects 1 argument, got {}", arg_terms.len());
                             }
@@ -773,6 +868,12 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                             AssignedTerm::Field(aa)
                         }
                         "midnight_poseidon" => {
+                            if !matches!(call.ret_sort, Sort::Field(_)) {
+                                panic!(
+                                    "UndefinedFnCall '{}' returns non-field sort in embed_pf: {}",
+                                    call.name, call.ret_sort
+                                );
+                            }
                             let inputs = flatten_field_args(&arg_terms, &call.arg_sorts)?;
                             if inputs.is_empty() {
                                 panic!("midnight_poseidon: need at least one field input");
@@ -793,7 +894,8 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
     }
 
     fn embed_bv(&mut self, bv: Term) -> Result<(), Error> {
-        let Sort::BitVector(n) = check(&bv) else {
+        let check_bv = check(&bv);
+        let Sort::BitVector(n) = check_bv else {
             panic!("embed_bv expects bv")
         };
         if self.cache.contains_key(&bv) {
@@ -803,16 +905,24 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         let assigned = match bv.op() {
             Op::Var(_) => panic!("call embed_var for vars"),
             Op::Const(v) => {
-                // Direct BigUint assignment from constant BV.
-                let b = v.as_bv().uint(); // TODO is it me or the type inference is struggling?
-                let val = BigUint::from_str_radix(&b.to_string_radix(10), 10).unwrap();
-                let big = self
-                    .big
-                    .assign_biguint(self.lay, Value::known(val), n as u32)?;
-                AssignedTerm::Bv {
-                    width: n,
-                    big,
-                    bits_cache_le: None,
+                if check_bv == Sort::BitVector(8) {
+                    // Special case: BV(8) constant as AssignedByte
+                    let b: u8 = v.as_bv().uint().to_u8().unwrap();
+                    let byte: AssignedByte<F> = self.std.assign(self.lay, Value::known(b))?;
+                    self.cache.insert(bv.clone(), AssignedTerm::Byte(byte));
+                    return Ok(());
+                } else {
+                    // Direct BigUint assignment from constant BV.
+                    let b = v.as_bv().uint(); // TODO is it me or the type inference is struggling?
+                    let val = BigUint::from_str_radix(&b.to_string_radix(10), 10).unwrap();
+                    let big = self
+                        .big
+                        .assign_biguint(self.lay, Value::known(val), n as u32)?;
+                    AssignedTerm::Bv {
+                        width: n,
+                        big,
+                        bits_cache_le: None,
+                    }
                 }
             }
             Op::Ite => {
@@ -1031,6 +1141,56 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                     bits_cache_le: Some(vec![b]),
                 }
             }
+            Op::UndefinedFnCall(call) => {
+                if !matches!(call.ret_sort, Sort::BitVector(8)) {
+                    panic!(
+                        "UndefinedFnCall '{}' returns non-field sort in embed_pf: {}",
+                        call.name, call.ret_sort
+                    );
+                }
+                let arg_terms = bv.cs();
+
+                match call.name.as_str() {
+                    "midnight_sha256" => {
+                        ark_std::println!("midnight_sha256: hey there",);
+                        // Return sort must be Array(BV(8), 32)
+                        if let Sort::Array(ret_arr) = &call.ret_sort {
+                            assert!(
+                                matches!(ret_arr.val, Sort::BitVector(8)) && ret_arr.size == 32,
+                                "midnight_sha256: return sort must be Array(BV(8), 32), got {}",
+                                call.ret_sort
+                            );
+                        } else {
+                            panic!(
+                                "midnight_sha256 must return Array(BV(8), 32), got {}",
+                                call.ret_sort
+                            );
+                        }
+
+                        // Gather all input bytes from args (BV(8), tuples/arrays of BV(8))
+                        let mut bytes_in: Vec<AssignedByte<F>> = Vec::new();
+                        for t in arg_terms {
+                            bytes_in.extend(self.collect_bytes(t)?);
+                        }
+                        if bytes_in.is_empty() {
+                            panic!("midnight_sha256: need at least one input byte");
+                        }
+                        ark_std::println!(
+                            "midnight_sha256: hashing {} input bytes",
+                            bytes_in.len()
+                        );
+
+                        // Call Midnight stdlib SHA256 gadget
+                        let digest: [AssignedByte<F>; 32] = self.std.sha256(self.lay, &bytes_in)?;
+
+                        AssignedTerm::Bytes(Vec::from(digest))
+                    }
+
+                    other => {
+                        panic!("UndefinedFnCall '{}' not implemented in embed_pf", other);
+                    }
+                }
+            }
             other => panic!("embed_bv unsupported op {}", other),
         };
         self.cache.insert(bv, assigned);
@@ -1058,6 +1218,13 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         }
     }
 
+    fn get_byte(&mut self, t: &Term) -> Option<&AssignedByte<F>> {
+        match self.cache.get(t) {
+            Some(AssignedTerm::Byte(b)) => Some(b),
+            _ => None,
+        }
+    }
+
     // -------------------------
     // Assertions
     // -------------------------
@@ -1077,6 +1244,12 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                     let af = self.get_field(a)?.clone();
                     let bf = self.get_field(b)?.clone();
                     self.std.assert_equal(self.lay, &af, &bf)
+                }
+                Sort::BitVector(8) => {
+                    let ax = self.get_bv_byte(a)?;
+                    let bx = self.get_bv_byte(b)?;
+                    let eq = self.std.is_equal(self.lay, &ax, &bx)?;
+                    self.std.assert_true(self.lay, &eq)
                 }
                 Sort::BitVector(_) => {
                     let ax = self.get_bv_big(a)?;
@@ -1157,6 +1330,11 @@ impl<'a> m::Relation for IrRelation<'a> {
                 InputValue::Big(bu) => {
                     // Use the helper that matches the stdlib/base decomposition.
                     out.extend(biguint_to_limbs::<F>(bu, None));
+                }
+                InputValue::Byte(b) => {
+                    let mut bytes = [0u8; 32];
+                    bytes[31] = *b;
+                    out.push(F::from_bytes_be(&bytes).unwrap())
                 }
             }
         }

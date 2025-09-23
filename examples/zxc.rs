@@ -2777,12 +2777,7 @@ fn main() {
     let mut assign: HashMap<String, InputValue> = HashMap::new();
     assign.insert("v.x".into(), InputValue::Field(f_from_dec("1")));
     assign.insert("v.y".into(), InputValue::Field(f_from_dec("2")));
-    assign.insert(
-        "return.a".into(),
-        InputValue::Field(f_from_dec(
-            "2",
-        )),
-    );
+    assign.insert("return.a".into(), InputValue::Byte(4));
     assign.insert(
         "return.b".into(),
         InputValue::Field(f_from_dec(
@@ -2840,7 +2835,8 @@ fn main() {
     let now = Instant::now();
     // 4) Verify
     let res =
-        m::verify::<IrRelation<'_>, Blake2b>(&srs.verifier_params(), &vk, &instance, None, &proof);
+        m::verify::<IrRelation<'_>, Blake2b>(&srs.verifier_params(), &vk, &instance, None, &proof)
+            .unwrap();
     ark_std::println!("verify = {:?} ({:?})", res, now.elapsed());
 
     // implement optimizer
