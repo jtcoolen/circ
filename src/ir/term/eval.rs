@@ -498,7 +498,7 @@ pub fn eval_op(op: &Op, args: &[&Value], var_vals: &FxHashMap<String, Value>) ->
 
                     // TODO check key_sort correct
                     crate::ir::term::Value::Array(Array::from_vec(
-                        Sort::BitVector(64),
+                        Sort::Field(FieldT::FBls12381), // hackish, we use bls in the prover
                         Sort::BitVector(8),
                         items,
                     ))

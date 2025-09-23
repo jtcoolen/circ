@@ -2790,6 +2790,14 @@ fn main() {
             "674438398409480172400885812943766143516309774576089581007637451837316835265",
         )),
     );
+    let resu_bytes = vec![
+        0x4b, 0xf5, 0x12, 0x2f, 0x34, 0x45, 0x54, 0xc5, 0x3b, 0xde, 0x2e, 0xbb, 0x8c, 0xd2, 0xb7, 0xe3,
+        0xd1, 0x60, 0x0a, 0xd6, 0x31, 0xc3, 0x85, 0xa5, 0xd7, 0xcc, 0xe2, 0x3c, 0x77, 0x85, 0x45, 0x9a,
+    ];
+    // Change one or two bytes and you will see verification fail :)
+    for (idx, byte) in resu_bytes.iter().enumerate() {
+        assign.insert(format!("return.resu.{}", idx), InputValue::Byte(*byte));
+    }
 
     // 1) Build the relation wrapper
     let relation: circ::target::halo2::trans::IrRelation<'_> =

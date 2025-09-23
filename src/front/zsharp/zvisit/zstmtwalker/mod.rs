@@ -74,9 +74,7 @@ impl<'ast, 'ret> ZStatementWalker<'ast, 'ret> {
         expr: &mut ast::Expression<'ast>,
     ) -> ZVisitorResult {
         use ast::Expression::*;
-        println!("\nDefn ty in unify expr is {:?}\n", ty);
         let ty = self.canon_type(ty)?;
-        println!("\nDefn ty in unify expr after canon_type is {:?}\n", ty);
         match expr {
             Ternary(te) => self.unify_ternary(ty, te),
             Binary(be) => self.unify_binary(ty, be),
@@ -140,10 +138,6 @@ impl<'ast, 'ret> ZStatementWalker<'ast, 'ret> {
             }))
         });
         if let Some(ty) = rty {
-            println!(
-                "\nFn name is {} ty is {:?}, expected on is {:?}\n",
-                fdef.id.value, ty, ret_ty
-            );
             self.eq_type(ty, &ret_ty)?;
         }
         Ok(ret_ty)
@@ -222,10 +216,6 @@ impl<'ast, 'ret> ZStatementWalker<'ast, 'ret> {
         pf: &mut ast::PostfixExpression<'ast>,
     ) -> ZVisitorResult {
         let acc_ty = self.get_postfix_ty(pf, Some(&ty))?;
-        println!(
-            "\nunify postfix ty is {:?}, expected on is {:?}\n",
-            ty, acc_ty
-        );
         self.eq_type(&ty, &acc_ty)
     }
 
@@ -861,13 +851,11 @@ impl<'ast> ZVisitorMut<'ast> for ZStatementWalker<'ast, '_> {
                     Assignee(a) => (&a.id.value, a.accesses.as_ref()),
                     TypedIdentifier(ti) => (&ti.identifier.value, &[][..]),
                 };
-                println!("\nDefn LHS name is {:?}\n", na);
                 self.lookup_type_varonly(na).map(|t| t.map(|t| (t, acc)))
             })
             .transpose()?
             .flatten();
         if let Some((ty, accs)) = ty_accs {
-            println!("\nDefn ty is {:?}\n", ty);
             let ty = self.walk_accesses(ty, accs, aacc_to_msacc)?;
             self.unify(Some(ty), &mut def.expression)?;
         } else {

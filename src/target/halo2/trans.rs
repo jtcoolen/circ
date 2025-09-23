@@ -97,6 +97,7 @@ pub enum InputValue {
     Big(BigUint),
     Byte(u8),
     Bool(bool),
+    ByteArray(Vec<u8>)
 }
 
 impl InputValue {
@@ -1335,6 +1336,13 @@ impl<'a> m::Relation for IrRelation<'a> {
                     let mut bytes = [0u8; 32];
                     bytes[31] = *b;
                     out.push(F::from_bytes_be(&bytes).unwrap())
+                }
+                InputValue::ByteArray(ba) => {
+                    for b in ba {
+                        let mut bytes = [0u8; 32];
+                        bytes[31] = *b;
+                        out.push(F::from_bytes_be(&bytes).unwrap())
+                    }
                 }
             }
         }
