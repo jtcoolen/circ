@@ -2778,9 +2778,21 @@ fn main() {
     assign.insert("v.x".into(), InputValue::Field(f_from_dec("1")));
     assign.insert("v.y".into(), InputValue::Field(f_from_dec("2")));
     assign.insert(
-        "return".into(),
+        "return.a".into(),
         InputValue::Field(f_from_dec(
-            "12648199851421323489665712353432219719360195185830732427443650224407112195945",
+            "2",
+        )),
+    );
+    assign.insert(
+        "return.b".into(),
+        InputValue::Field(f_from_dec(
+            "50392767758313956917667316955031827721960740831303956600582261269036067402118",
+        )),
+    );
+    assign.insert(
+        "return.c".into(),
+        InputValue::Field(f_from_dec(
+            "674438398409480172400885812943766143516309774576089581007637451837316835265",
         )),
     );
 
@@ -2794,7 +2806,7 @@ fn main() {
         .map(|n| {
             assign
                 .get(n)
-                .unwrap_or_else(|| panic!("missing public input '{n}'"))
+                .unwrap_or_else(|| panic!("missing public input '{}'", n))
                 .clone()
         })
         .collect();
@@ -2805,7 +2817,7 @@ fn main() {
         .map(|n| {
             assign
                 .get(n)
-                .unwrap_or_else(|| panic!("missing input '{n}'"))
+                .unwrap_or_else(|| panic!("missing input '{}'", n))
                 .clone()
         })
         .collect();

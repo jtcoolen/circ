@@ -1188,12 +1188,6 @@ impl<'a> m::Relation for IrRelation<'a> {
             .zip(wit_vec.into_iter())
             .collect();
 
-        ark_std::println!(
-            "Midnight relation circuit:\n public inputs: {:?}\n witnesses: {:?}",
-            imap.keys().collect::<Vec<_>>(),
-            wmap.keys().collect::<Vec<_>>()
-        );
-
         let used_vars: HashSet<String> =
             extras::free_variables(term(Op::Tuple, self.cs.outputs.clone()))
                 .into_iter()

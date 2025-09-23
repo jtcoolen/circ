@@ -1,7 +1,8 @@
 from "./poseidon.zok" import main as poseidon
-struct Bar<N> {
-    field[N] c
-    bool d
+struct Bar {
+    u64 a
+    field b
+    field c
 }
 
 struct Pt {
@@ -9,11 +10,13 @@ struct Pt {
     field y
 }
 
-def main(private Pt v) -> field :
+def main(private Pt v) -> Bar :
     field z = PlonkMul2(v.x)
 
     field result = poseidon([v.y])
     field result2 = midnight_poseidon([result, z, v.x])
 
+    u64 a = 6542
+    u64 mod = 6
 
-    return result2/result
+    return Bar { a: a%mod , b: result2, c:result}
