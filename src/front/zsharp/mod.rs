@@ -859,7 +859,7 @@ impl<'ast> ZGen<'ast> {
                     None => {
                         debug!("No function {} {:?}", f_name, f_path);
                         // Not found: treat as undefined function call
-                        let arg_terms = args.iter().map(|a| a.term.clone()).collect::<Vec<_>>();
+                        let _arg_terms = args.iter().map(|a| a.term.clone()).collect::<Vec<_>>();
                         // 1) Collect arg terms & sorts
                         let arg_terms: Vec<Term> = args.iter().map(|a| a.term.clone()).collect();
                         let arg_sorts: Vec<Sort> = arg_terms.iter().map(|t| check(t)).collect();
@@ -889,7 +889,7 @@ impl<'ast> ZGen<'ast> {
             None => {
                 debug!("No function {} {:?}", f_name, f_path);
                 // Not found: treat as undefined function call
-                let arg_terms = args.iter().map(|a| a.term.clone()).collect::<Vec<_>>();
+                let _arg_terms = args.iter().map(|a| a.term.clone()).collect::<Vec<_>>();
                 // 1) Collect arg terms & sorts
                 let arg_terms: Vec<Term> = args.iter().map(|a| a.term.clone()).collect();
                 let arg_sorts: Vec<Sort> = arg_terms.iter().map(|t| check(t)).collect();

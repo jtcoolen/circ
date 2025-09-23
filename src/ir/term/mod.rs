@@ -21,7 +21,6 @@
 //!    * [Value]: a variable-free (and evaluated) term
 //!
 
-use ark_ff::PrimeField;
 use circ_fields::{FieldT, FieldV};
 pub use circ_hc::{Node, Table, Weak};
 use circ_opt::FieldToBv;
@@ -396,7 +395,7 @@ impl Op {
             Op::Rot(_) => Some(1),
             Op::ExtOp(o) => o.arity(),
             Op::PfToBoolTrusted => Some(1),
-            Op::UndefinedFnCall(c) => Some(1),
+            Op::UndefinedFnCall(c) => Some(c.arg_sorts.len()), // was causing the tuple issue TODO
         }
     }
 

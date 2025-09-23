@@ -2766,7 +2766,7 @@ fn main() {
 
     use blake2b_simd::State as Blake2b;
     use circ::target::halo2::trans::to_midnight_relation;
-    use circ::target::halo2::trans::IrRelation;
+    use circ::target::halo2::trans::{InputValue, IrRelation};
     use midnight_circuits::compact_std_lib as m;
     use midnight_circuits::testing_utils::plonk_api::filecoin_srs; // or your SRS loader
     use midnight_curves::Bls12;
@@ -2774,35 +2774,39 @@ fn main() {
     use midnight_proofs::poly::kzg::params::ParamsKZG;
 
     // TODO hook up witness generation tool (zxi interpreter)
-    let mut assign: HashMap<String, F> = HashMap::new();
-    assign.insert("v.x".into(), f_from_dec("1"));
-    assign.insert("v.y".into(), f_from_dec("2"));
+    let mut assign: HashMap<String, InputValue> = HashMap::new();
+    assign.insert("v.x".into(), InputValue::Field(f_from_dec("1")));
+    assign.insert("v.y".into(), InputValue::Field(f_from_dec("2")));
     assign.insert(
         "return".into(),
-        f_from_dec("12648199851421323489665712353432219719360195185830732427443650224407112195945"),
+        InputValue::Field(f_from_dec(
+            "12648199851421323489665712353432219719360195185830732427443650224407112195945",
+        )),
     );
 
     // 1) Build the relation wrapper
     let relation: circ::target::halo2::trans::IrRelation<'_> =
         to_midnight_relation(&cs.get("main"), cfg());
 
-    let instance: Vec<F> = relation
+    let instance: Vec<InputValue> = relation
         .public_names
         .iter()
         .map(|n| {
-            *assign
+            assign
                 .get(n)
                 .unwrap_or_else(|| panic!("missing public input '{n}'"))
+                .clone()
         })
         .collect();
 
-    let witness: Vec<F> = relation
+    let witness: Vec<InputValue> = relation
         .all_names
         .iter()
         .map(|n| {
-            *assign
+            assign
                 .get(n)
                 .unwrap_or_else(|| panic!("missing input '{n}'"))
+                .clone()
         })
         .collect();
 

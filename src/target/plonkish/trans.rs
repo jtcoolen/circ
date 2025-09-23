@@ -9,8 +9,7 @@ use crate::target::plonkish::VarType;
 use circ_fields::{FieldT, FieldV};
 use circ_opt::FieldDivByZero;
 use im::HashSet;
-use itertools::assert_equal;
-use log::{debug, trace};
+use log::debug;
 
 use fxhash::FxHashMap;
 use rug::ops::Pow;
@@ -1557,7 +1556,7 @@ impl<'cfg> ToPlonk<'cfg> {
     }
 
     /// Compare two bitvectors
-    fn bv_cmp(&mut self, width: usize, signed: bool, strict: bool, a: &Term, b: &Term) -> Wire {
+    fn bv_cmp(&mut self, _width: usize, signed: bool, strict: bool, a: &Term, b: &Term) -> Wire {
         let a_bits = self.get_bv_bits(a);
         let b_bits = self.get_bv_bits(b);
 

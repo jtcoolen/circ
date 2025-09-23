@@ -10,7 +10,7 @@ use crate::target::r1cs::*;
 
 use circ_fields::FieldT;
 use circ_opt::FieldDivByZero;
-use log::{debug, trace};
+use log::debug;
 use rug::ops::Pow;
 use rug::Integer;
 

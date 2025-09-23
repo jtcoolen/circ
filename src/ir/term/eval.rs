@@ -13,7 +13,7 @@ use once_cell::sync::Lazy;
 use rug::integer::Order;
 
 // ✅ Use the SAME ff traits that midnight/halo2curves uses
-use midnight_circuits::halo2curves::ff::{Field, PrimeField};
+use midnight_circuits::halo2curves::ff::PrimeField;
 
 use midnight_circuits::hash::poseidon::{round_skips::PreComputedRoundCPU, PoseidonChip};
 use midnight_circuits::instructions::hash::HashCPU;
@@ -449,7 +449,6 @@ pub fn eval_op(op: &Op, args: &[&Value], var_vals: &FxHashMap<String, Value>) ->
                         }
                         field_vs.push(f);
                     }
-                    let out_fty = fty_opt.expect("unreachable: nonempty");
 
                     let inputs_f: Vec<F> = field_vs.iter().map(pf_to_f).collect();
 
