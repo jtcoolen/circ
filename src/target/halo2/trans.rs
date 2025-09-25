@@ -945,37 +945,39 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                                 );
                             }
 
-                            // 1) Leaf: 32 bytes BV(8)
+                            // 1) Leaf bytes: exactly 32 BV(8)
                             let leaf_bytes: [AssignedByte<F>; 32] =
                                 self.collect_32_bytes(&arg_terms[0])?;
 
                             // 2) Siblings: Field[]
-                            let siblings: Vec<AssignedNative<F>> =
+                            let assigned_input_words: Vec<AssignedNative<F>> =
                                 self.flatten_fields_any(&arg_terms[1])?;
 
                             // 3) Positions: Field[] (each 0/1) -> AssignedBit
                             let pos_fields: Vec<AssignedNative<F>> =
                                 self.flatten_fields_any(&arg_terms[2])?;
-                            if siblings.len() != pos_fields.len() {
+                            if assigned_input_words.len() != pos_fields.len() {
                                 panic!(
                                     "midnight_hybrid_mt: siblings and positions length mismatch ({} vs {})",
-                                    siblings.len(),
+                                    assigned_input_words.len(),
                                     pos_fields.len()
                                 );
                             }
-                            let pos_bits: Vec<AssignedBit<F>> = pos_fields
+                            let assigned_input_positions: Vec<AssignedBit<F>> = pos_fields
                                 .iter()
                                 .map(|p| self.std.convert(self.lay, p))
                                 .collect::<Result<_, _>>()?;
 
                             // Compute SHA256(leaf_bytes)
-                            let digest: [AssignedByte<F>; 32] =
+                            let output: [AssignedByte<F>; 32] =
                                 self.std.sha256(self.lay, &leaf_bytes)?;
 
-                            // Digest bytes -> 8 words (big-endian, 4 bytes each)
-                            let words: Vec<AssignedNative<F>> = digest
-                                .chunks(4)
-                                .map(|w4| self.std.assigned_from_be_bytes(self.lay, w4))
+                            // Convert digest bytes to 8 words (big-endian, 4 bytes each)
+                            let output_words: Vec<AssignedNative<F>> = output
+                                .chunks_exact(4)
+                                .map(|word_bytes| {
+                                    self.std.assigned_from_be_bytes(self.lay, word_bytes)
+                                })
                                 .collect::<Result<Vec<_>, _>>()?;
 
                             // lo = 2^96*w0 + 2^64*w1 + 2^32*w2 + w3
@@ -983,20 +985,20 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                             let lo = self.std.linear_combination(
                                 self.lay,
                                 &[
-                                    (F::from_u128(1u128 << 96), words[0].clone()),
-                                    (F::from_u128(1u128 << 64), words[1].clone()),
-                                    (F::from_u128(1u128 << 32), words[2].clone()),
-                                    (F::ONE, words[3].clone()),
+                                    (F::from_u128(2u128.pow(96)), output_words[0].clone()),
+                                    (F::from_u128(2u128.pow(64)), output_words[1].clone()),
+                                    (F::from_u128(2u128.pow(32)), output_words[2].clone()),
+                                    (F::ONE, output_words[3].clone()),
                                 ],
                                 F::ZERO,
                             )?;
                             let hi = self.std.linear_combination(
                                 self.lay,
                                 &[
-                                    (F::from_u128(1u128 << 96), words[4].clone()),
-                                    (F::from_u128(1u128 << 64), words[5].clone()),
-                                    (F::from_u128(1u128 << 32), words[6].clone()),
-                                    (F::ONE, words[7].clone()),
+                                    (F::from_u128(2u128.pow(96)), output_words[4].clone()),
+                                    (F::from_u128(2u128.pow(64)), output_words[5].clone()),
+                                    (F::from_u128(2u128.pow(32)), output_words[6].clone()),
+                                    (F::ONE, output_words[7].clone()),
                                 ],
                                 F::ZERO,
                             )?;
@@ -1004,17 +1006,22 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                             let zero: AssignedNative<F> =
                                 self.std.assign_fixed(self.lay, F::ZERO)?;
 
-                            // Leaf node = Poseidon(lo, hi, 0)
-                            let mut acc = self.std.poseidon(self.lay, &[lo, hi, zero.clone()])?;
+                            // Leaf = Poseidon(lo, hi, 0)
+                            let leaf = self.std.poseidon(self.lay, &[lo, hi, zero.clone()])?;
 
-                            // Fold siblings up the tree (left/right determined by pos bit)
-                            for (sib, b) in siblings.iter().zip(pos_bits.iter()) {
-                                let left = self.std.select(self.lay, b, &acc, sib)?; // if b=1 -> acc (node) is left, else sibling
-                                let right = self.std.select(self.lay, b, sib, &acc)?; // if b=1 -> sibling is right, else acc
-                                acc = self.std.poseidon(self.lay, &[left, right, zero.clone()])?;
-                            }
+                            // Fold siblings up the tree using the exact select pattern:
+                            // left  = select(pos, acc, sibling)  // if pos==1 -> current node is left; else sibling
+                            // right = select(pos, sibling, acc)  // if pos==1 -> sibling is right; else current node
+                            let root = assigned_input_words
+                                .iter()
+                                .zip(assigned_input_positions.iter())
+                                .try_fold(leaf, |acc, (x, pos)| {
+                                    let left = self.std.select(self.lay, pos, &acc, x)?;
+                                    let right = self.std.select(self.lay, pos, x, &acc)?;
+                                    self.std.poseidon(self.lay, &[left, right, zero.clone()])
+                                })?;
 
-                            AssignedTerm::Field(acc)
+                            AssignedTerm::Field(root)
                         }
                         other => {
                             panic!("UndefinedFnCall '{}' not implemented in embed_pf", other);

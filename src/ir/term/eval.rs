@@ -14,11 +14,11 @@ use once_cell::sync::Lazy;
 use rug::integer::Order;
 use sha2::{Digest, Sha256};
 
-// ✅ Use the SAME ff traits that midnight/halo2curves uses
+use midnight_circuits::halo2curves::ff::Field;
 use midnight_circuits::halo2curves::ff::PrimeField;
-
 use midnight_circuits::hash::poseidon::{round_skips::PreComputedRoundCPU, PoseidonChip};
 use midnight_circuits::instructions::hash::HashCPU;
+use std::convert::TryInto;
 
 type F = midnight_curves::Fq;
 const WIDTH: usize = PoseidonChip::<F>::register_size();
@@ -59,6 +59,46 @@ fn push_fields_from_value(v: &crate::ir::term::Value, out: &mut Vec<crate::ir::t
         }
         other => panic!(
             "push_fields_from_value: expected Field or tuple/array of Fields, got {:?}",
+            other.sort()
+        ),
+    }
+}
+
+/// Recursively flatten a Value into a Vec<u8>, accepting:
+///  - BV(8)
+///  - Tuple of BV(8)
+///  - Array of BV(8)
+pub fn push_bytes_from_value(v: &Value, out: &mut Vec<u8>) {
+    match v {
+        // single byte
+        Value::BitVector(bv) if bv.width() == 8 => {
+            let b = bv
+                .uint()
+                .to_u8()
+                .expect("push_bytes_from_value: BV(8) value out of range");
+            out.push(b);
+        }
+
+        // tuple-of-bytes (or nested tuples)
+        Value::Tuple(ts) => {
+            for t in ts {
+                push_bytes_from_value(t, out);
+            }
+        }
+
+        // array-of-bytes
+        Value::Array(a) => {
+            // iterate indices in order and collect elements
+            let iter = a.key_sort.clone().elems_iter_values().take(a.size);
+            for idx in iter {
+                let el = a.select(&idx);
+                push_bytes_from_value(&el, out);
+            }
+        }
+
+        // anything else is a type error for the sha/merkle APIs
+        other => panic!(
+            "push_bytes_from_value: expected BV(8) or tuple/array of BV(8); got {:?}",
             other.sort()
         ),
     }
@@ -502,6 +542,104 @@ pub fn eval_op(op: &Op, args: &[&Value], var_vals: &FxHashMap<String, Value>) ->
                         Sort::BitVector(8),
                         items,
                     ))
+                }
+                "midnight_hybrid_mt" => {
+                    // Args: (leaf_bytes, siblings, positions)
+                    assert!(
+                        args.len() == 3,
+                        "midnight_hybrid_mt expects 3 arguments (leaf_bytes, siblings, positions), got {}",
+                        args.len()
+                    );
+
+                    // --- 1) Leaf bytes (must be exactly 32 bytes) ---
+                    let mut leaf_bytes: Vec<u8> = Vec::new();
+                    push_bytes_from_value(args[0], &mut leaf_bytes);
+                    assert!(
+                        leaf_bytes.len() == 32,
+                        "midnight_hybrid_mt: leaf_bytes must be exactly 32 bytes, got {}",
+                        leaf_bytes.len()
+                    );
+
+                    // SHA256(leaf_bytes)
+                    let mut hasher = Sha256::new();
+                    hasher.update(&leaf_bytes);
+                    let digest: [u8; 32] = hasher.finalize().into();
+
+                    // Split digest into two u128 (big-endian by 16-byte chunks).
+                    // hi = digest[16..32], lo = digest[0..16], each as u128::from_be_bytes
+                    let lo_u128 = u128::from_be_bytes(digest[0..16].try_into().unwrap());
+                    let hi_u128 = u128::from_be_bytes(digest[16..32].try_into().unwrap());
+
+                    let lo_f = F::from_u128(lo_u128);
+                    let hi_f = F::from_u128(hi_u128);
+                    let zero_f = F::ZERO;
+
+                    // --- 2) Siblings: flatten fields (must be same field type) ---
+                    let mut sib_vals: Vec<crate::ir::term::Value> = Vec::new();
+                    push_fields_from_value(args[1], &mut sib_vals);
+                    assert!(
+                        !sib_vals.is_empty(),
+                        "midnight_hybrid_mt: need at least one sibling"
+                    );
+
+                    // Capture field type for the output from the first sibling
+                    let first_sib_pf = sib_vals[0].as_pf().clone();
+                    let fty: FieldT = first_sib_pf.ty().clone();
+
+                    let siblings_f: Vec<F> = sib_vals
+                        .iter()
+                        .map(|v| {
+                            let pf = v.as_pf().clone();
+                            // Ensure uniform field type
+                            assert_eq!(
+                                pf.ty(),
+                                fty,
+                                "midnight_hybrid_mt: mixed field types in siblings"
+                            );
+                            pf_to_f(&pf)
+                        })
+                        .collect();
+
+                    // --- 3) Positions: flatten fields; must be same length as siblings; each ∈ {0,1} ---
+                    let mut pos_vals: Vec<crate::ir::term::Value> = Vec::new();
+                    push_fields_from_value(args[2], &mut pos_vals);
+                    assert_eq!(
+                        siblings_f.len(),
+                        pos_vals.len(),
+                        "midnight_hybrid_mt: siblings and positions length mismatch ({} vs {})",
+                        siblings_f.len(),
+                        pos_vals.len()
+                    );
+
+                    let positions_bits: Vec<bool> = pos_vals
+                        .iter()
+                        .map(|v| {
+                            let pf = v.as_pf().clone();
+                            // Allow positions to be any FieldT but force them to be 0 or 1 as integers.
+                            let i = pf.i();
+                            assert!(
+                                i == 0 || i == 1,
+                                "midnight_hybrid_mt: position not in {{0,1}}"
+                            );
+                            i == 1
+                        })
+                        .collect();
+
+                    // --- 4) Compute leaf Poseidon(lo, hi, 0) ---
+                    let mut acc = PoseidonChip::<F>::hash(&[lo_f, hi_f, zero_f]);
+
+                    // --- 5) Fold along path: if pos==1 (Right) => hash(acc, sib, 0); else (Left) => hash(sib, acc, 0)
+                    for (sib, is_right) in siblings_f.into_iter().zip(positions_bits.into_iter()) {
+                        acc = if is_right {
+                            PoseidonChip::<F>::hash(&[acc, sib, zero_f])
+                        } else {
+                            PoseidonChip::<F>::hash(&[sib, acc, zero_f])
+                        };
+                    }
+
+                    // --- 6) Return field element with the same IR field type as siblings ---
+                    let out_v: FieldV = f_to_pf(&fty, &acc);
+                    Value::Field(out_v)
                 }
 
                 other => {

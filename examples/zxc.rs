@@ -1,5 +1,4 @@
 use ark_bls12_381::Bls12_381;
-
 /*
 use bellman::gadgets::test::TestConstraintSystem;
 use bellman::groth16::{
@@ -19,6 +18,7 @@ use circ::target::r1cs::wit_comp;
 use circ_fields::FullFieldV::FBls12381;
 use ff::derive::bitvec::field;
 use fxhash::FxHashMap;
+use im::HashMap;
 use rsmt2::print;
 use rug::Integer;
 use std::sync::Arc;
@@ -51,7 +51,7 @@ use circ::target::plonkish::trans::Wire;
 use circ_fields::{FieldT, FieldV};
 use hyperplonk::structs::HyperPlonkParams;
 use rug::integer::Order;
-use std::collections::HashMap;
+use std::collections::HashMap as OtherHashMap;
 
 use rayon::prelude::*;
 
@@ -60,29 +60,6 @@ use std::cmp::max;
 use std::collections::HashSet;
 
 use ark_std::log2;
-
-use midnight_curves::Fq as F;
-
-fn be32_from_biguint(n: &BigUint) -> Result<[u8; 32], &'static str> {
-    let bytes = n.to_bytes_be();
-    if bytes.len() > 32 {
-        return Err("value does not fit in 32 bytes");
-    }
-    let mut out = [0u8; 32];
-    let start = 32 - bytes.len();
-    out[start..].copy_from_slice(&bytes); // left-pad with zeros
-    Ok(out)
-}
-
-fn f_from_dec(s: &str) -> F {
-    let n = BigUint::from_str_radix(s.trim(), 10).expect("bad decimal");
-    f_from_biguint(&n)
-}
-
-fn f_from_biguint(n: &BigUint) -> F {
-    let be = be32_from_biguint(&n).expect("value > 32 bytes; reduce mod p");
-    F::from_bytes_be(&be).expect("value >= modulus; reduce mod p")
-}
 
 /// A row of selector of width `#selectors`
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1155,11 +1132,11 @@ impl<F: PrimeField> PlonkToHyperPlonkMapper<F> {
         let mut values = vec![F::zero(); 3 * num_constraints];
 
         let vars: HashMap<Var, FieldV> = self.eval_all_vars();
-        println!(
+        /*println!(
             "eval_all_vars {:?}, inputs {:?}",
-            vars.clone().into_values(),
+            vars.clone().values(),
             self.inputs
-        );
+        );*/
         for (var, field_v) in vars {
             println!("inserting val {}", var.name);
             let field_f = self.field_v_to_f(&field_v)?;
@@ -2466,6 +2443,170 @@ pub fn flatten_witness_matrix_preserve_padding<F: Clone>(columns: &[Vec<F>]) -> 
 }
 
 // ===
+use blake2b_simd::State as Blake2b;
+use circ::target::halo2::trans::to_midnight_relation;
+use circ::target::halo2::trans::{InputValue, IrRelation};
+use midnight_circuits::compact_std_lib as m;
+use midnight_circuits::halo2curves::ff::Field as Halo2Field;
+use midnight_circuits::halo2curves::ff::PrimeField as Halo2PrimeField;
+use midnight_circuits::hash::poseidon::constants::PoseidonField;
+use midnight_circuits::hash::poseidon::PoseidonChip;
+use midnight_circuits::instructions::hash::HashCPU;
+use midnight_circuits::testing_utils::plonk_api::filecoin_srs; // or your SRS loader
+use midnight_curves::Bls12;
+use midnight_curves::Fq as F;
+use midnight_proofs::poly::kzg::params::ParamsKZG;
+use rand::{rngs::OsRng, Rng, SeedableRng};
+use rand_chacha::ChaCha8Rng;
+use sha2::Digest;
+use sha2::Sha256;
+
+use std::convert::TryInto;
+
+fn be32_from_biguint(n: &BigUint) -> Result<[u8; 32], &'static str> {
+    let bytes = n.to_bytes_be();
+    if bytes.len() > 32 {
+        return Err("value does not fit in 32 bytes");
+    }
+    let mut out = [0u8; 32];
+    let start = 32 - bytes.len();
+    out[start..].copy_from_slice(&bytes); // left-pad with zeros
+    Ok(out)
+}
+
+fn f_from_dec(s: &str) -> F {
+    let n = BigUint::from_str_radix(s.trim(), 10).expect("bad decimal");
+    f_from_biguint(&n)
+}
+
+fn f_from_biguint(n: &BigUint) -> F {
+    let be = be32_from_biguint(&n).expect("value > 32 bytes; reduce mod p");
+    F::from_bytes_be(&be).expect("value >= modulus; reduce mod p")
+}
+
+const TREE_HEIGHT: usize = 32;
+const INPUT_BYTES: usize = 32;
+
+#[derive(Clone, Copy, Debug)]
+enum Position {
+    Left,
+    Right,
+}
+
+impl From<Position> for F {
+    fn from(value: Position) -> Self {
+        match value {
+            Position::Left => F::ZERO,
+            Position::Right => F::ONE,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MerklePath<F> {
+    leaf_bytes: [u8; INPUT_BYTES],
+    siblings: [(F, Position); TREE_HEIGHT - 1],
+}
+
+impl<F: PoseidonField> MerklePath<F> {
+    fn compute_root(&self) -> F {
+        let digest = sha2::Sha256::digest(self.leaf_bytes);
+
+        // Create low and high limbs from digest:
+        // If digest is [a, b, c, d, e, f, g, h] it computes:
+        //     lo = 2^{96}a + 2^{64}b + 2^32c + d
+        //     hi = 2^{96}e + 2^{64}f + 2^32g + h
+        let digest: [F; 2] = digest
+            .chunks(16)
+            .map(|bytes| u128::from_be_bytes(bytes.try_into().unwrap()))
+            .map(|limb| F::from_u128(limb))
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+
+        // Apply poseidon on the two limbs given by SHA.
+        let leaf = <PoseidonChip<F> as HashCPU<F, F>>::hash(&[digest[0], digest[1], F::ZERO]);
+
+        // Compute the Merkle root.
+        self.siblings.iter().fold(leaf, |acc, x| match x.1 {
+            // if sibling is on the left => hash(sibling, node)
+            Position::Left => <PoseidonChip<F> as HashCPU<F, F>>::hash(&[x.0, acc, F::ZERO]),
+            // if sibling is on the right => hash(node, sibling)
+            Position::Right => <PoseidonChip<F> as HashCPU<F, F>>::hash(&[acc, x.0, F::ZERO]),
+        })
+    }
+}
+
+fn create_random_merkle_path<F>() -> MerklePath<F>
+where
+    F: Halo2PrimeField,
+{
+    let mut rng = ChaCha8Rng::from_entropy();
+
+    // Sample a random leaf input of length INPUT_BYTES.
+    let leaf_bytes = (0..INPUT_BYTES)
+        .map(|_| rng.gen_range(0..255u8))
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+
+    // Sample random siblings.
+    let siblings: [(F, Position); TREE_HEIGHT - 1] = (0..TREE_HEIGHT - 1)
+        .map(|_| {
+            // A random element simulating a hash on a subtree.
+            let f = F::random(&mut rng);
+
+            // Whether the sibling is on the left or right position.
+            let pos = rng.gen_range(0..=1);
+            (
+                f,
+                if pos == 0 {
+                    Position::Left
+                } else {
+                    Position::Right
+                },
+            )
+        })
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+
+    MerklePath {
+        leaf_bytes,
+        siblings,
+    }
+}
+// ================= Assignment builder =================
+
+pub fn build_merkle_assignment_height32() -> HashMap<String, InputValue> {
+    // Build the MerklePath and compute the root
+    let path = create_random_merkle_path();
+    let root = path.compute_root();
+
+    // Fill the assignment
+    let mut assign: HashMap<String, InputValue> = HashMap::new();
+
+    // Public root
+    assign.insert("public_root".into(), InputValue::Field(root));
+
+    // Leaf bytes
+    for (i, b) in path.leaf_bytes.iter().enumerate() {
+        assign.insert(format!("v.leaf.{i}"), InputValue::Byte(b));
+    }
+
+    // Siblings (0..TREE_HEIGHT-2)
+    for (i, (sib, _pos)) in path.siblings.iter().enumerate() {
+        assign.insert(format!("v.siblings.{i}"), InputValue::Field(sib));
+    }
+
+    // Positions (0..TREE_HEIGHT-2), encoded as field 0/1 via From<Position> for F
+    for (i, (_sib, pos)) in path.siblings.iter().enumerate() {
+        let p_f: F = (pos).into(); // 0 for Left, 1 for Right
+        assign.insert(format!("v.positions.{i}"), InputValue::Field(p_f));
+    }
+
+    assign
+}
 
 fn main() {
     env_logger::Builder::from_default_env()
@@ -2764,29 +2905,11 @@ fn main() {
 
     println!("verifying: {:?}", start.elapsed());*/
 
-    use blake2b_simd::State as Blake2b;
-    use circ::target::halo2::trans::to_midnight_relation;
-    use circ::target::halo2::trans::{InputValue, IrRelation};
-    use midnight_circuits::compact_std_lib as m;
-    use midnight_circuits::testing_utils::plonk_api::filecoin_srs; // or your SRS loader
-    use midnight_curves::Bls12;
-    use midnight_curves::Fq as F;
-    use midnight_proofs::poly::kzg::params::ParamsKZG;
-
     // TODO hook up witness generation tool (zxi interpreter)
-    let mut assign: HashMap<String, InputValue> = HashMap::new();
+    let mut assign: HashMap<String, InputValue> = build_merkle_assignment_height32();
     assign.insert("v.x".into(), InputValue::Field(f_from_dec("1")));
     assign.insert("v.y".into(), InputValue::Field(f_from_dec("2")));
-    assign.insert("public_root".into(), InputValue::Field(f_from_dec("2")));
-    assign.insert("v.leaf.0".into(), InputValue::Byte(255));
-    assign.insert("v.leaf.1".into(), InputValue::Byte(25));
-    for i in 2..32 {
-        assign.insert(format!("v.leaf.{}", i), InputValue::Byte(0));
-    }
-    assign.insert("v.siblings.0".into(), InputValue::Field(f_from_dec("2")));
-    assign.insert("v.siblings.1".into(), InputValue::Field(f_from_dec("2")));
-    assign.insert("v.positions.0".into(), InputValue::Field(f_from_dec("1")));
-    assign.insert("v.positions.1".into(), InputValue::Field(f_from_dec("0")));
+
     assign.insert("return.a".into(), InputValue::Byte(4));
     assign.insert(
         "return.b".into(),

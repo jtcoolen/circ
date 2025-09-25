@@ -7,7 +7,7 @@ struct Bar {
     u8[32] resu
 }
 
-const u32 TREE_HEIGHT = 2u32
+const u32 TREE_HEIGHT = 32u32
 
 struct Pt {
     field x
