@@ -2777,6 +2777,16 @@ fn main() {
     let mut assign: HashMap<String, InputValue> = HashMap::new();
     assign.insert("v.x".into(), InputValue::Field(f_from_dec("1")));
     assign.insert("v.y".into(), InputValue::Field(f_from_dec("2")));
+    assign.insert("public_root".into(), InputValue::Field(f_from_dec("2")));
+    assign.insert("v.leaf.0".into(), InputValue::Byte(255));
+    assign.insert("v.leaf.1".into(), InputValue::Byte(25));
+    for i in 2..32 {
+        assign.insert(format!("v.leaf.{}", i), InputValue::Byte(0));
+    }
+    assign.insert("v.siblings.0".into(), InputValue::Field(f_from_dec("2")));
+    assign.insert("v.siblings.1".into(), InputValue::Field(f_from_dec("2")));
+    assign.insert("v.positions.0".into(), InputValue::Field(f_from_dec("1")));
+    assign.insert("v.positions.1".into(), InputValue::Field(f_from_dec("0")));
     assign.insert("return.a".into(), InputValue::Byte(4));
     assign.insert(
         "return.b".into(),
@@ -2791,8 +2801,9 @@ fn main() {
         )),
     );
     let resu_bytes = vec![
-        0x4b, 0xf5, 0x12, 0x2f, 0x34, 0x45, 0x54, 0xc5, 0x3b, 0xde, 0x2e, 0xbb, 0x8c, 0xd2, 0xb7, 0xe3,
-        0xd1, 0x60, 0x0a, 0xd6, 0x31, 0xc3, 0x85, 0xa5, 0xd7, 0xcc, 0xe2, 0x3c, 0x77, 0x85, 0x45, 0x9a,
+        0x4b, 0xf5, 0x12, 0x2f, 0x34, 0x45, 0x54, 0xc5, 0x3b, 0xde, 0x2e, 0xbb, 0x8c, 0xd2, 0xb7,
+        0xe3, 0xd1, 0x60, 0x0a, 0xd6, 0x31, 0xc3, 0x85, 0xa5, 0xd7, 0xcc, 0xe2, 0x3c, 0x77, 0x85,
+        0x45, 0x9a,
     ];
     // Change one or two bytes and you will see verification fail :)
     for (idx, byte) in resu_bytes.iter().enumerate() {
@@ -2802,7 +2813,6 @@ fn main() {
     // 1) Build the relation wrapper
     let relation: circ::target::halo2::trans::IrRelation<'_> =
         to_midnight_relation(&cs.get("main"), cfg());
-
 
     let instance: Vec<InputValue> = relation
         .public_names
@@ -2829,7 +2839,7 @@ fn main() {
     //ark_std::println!("circuit size = {}", relation.);
     // 2) SRS / VK / PK
     // TODO compute k from circuit
-    let k = 12; // pick an adequate k; or compute with relation.midnight min_k (see m::k_from_circuit)
+    let k = 13; // pick an adequate k; or compute with relation.midnight min_k (see m::k_from_circuit)
 
     let mut srs: ParamsKZG<Bls12> = filecoin_srs(k);
     let vk = m::setup_vk(&srs, &relation);

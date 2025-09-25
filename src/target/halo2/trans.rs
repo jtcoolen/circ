@@ -13,7 +13,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use ark_ff::Zero;
+use midnight_circuits::field::decomposition::chip::P2RDecompositionChip;
+use midnight_circuits::field::NativeChip;
+use midnight_circuits::field::NativeGadget;
 use midnight_circuits::halo2curves::ff::Field;
+use midnight_circuits::instructions::ConversionInstructions;
 use midnight_circuits::{
     // BigUint gadget + types
     biguint::{biguint_gadget::BigUintGadget, AssignedBigUint},
@@ -26,17 +31,13 @@ use midnight_circuits::{
     // Types from the stdlib side
     types::{AssignedBit, AssignedByte, AssignedNative},
 };
-
-use ark_ff::Zero;
-use midnight_circuits::field::decomposition::chip::P2RDecompositionChip;
-use midnight_circuits::field::NativeChip;
-use midnight_circuits::field::NativeGadget;
 use midnight_curves::Fq as F;
 use midnight_proofs::{
     circuit::{Layouter, Value},
     halo2curves::ff::PrimeField,
     plonk::Error,
 };
+use std::convert::TryInto;
 
 // copied from midnight, make it public upstream?
 pub(crate) const LOG2_BASE: u32 = 96;
@@ -97,7 +98,7 @@ pub enum InputValue {
     Big(BigUint),
     Byte(u8),
     Bool(bool),
-    ByteArray(Vec<u8>)
+    ByteArray(Vec<u8>),
 }
 
 impl InputValue {
@@ -264,6 +265,87 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
             imap,
             pub_order,
         }
+    }
+
+    /// Flatten `terms` using their `sorts` into field wires.
+    /// Accepts Field or Array(Field, _). Panics otherwise.
+    fn flatten_field_args(
+        &mut self,
+        terms: &[Term],
+        sorts: &[Sort],
+    ) -> Result<Vec<AssignedNative<F>>, Error> {
+        let mut out = Vec::<AssignedNative<F>>::new();
+        for (i, t) in terms.iter().enumerate() {
+            match &sorts[i] {
+                Sort::Field(_) => out.push(self.get_field(t)?.clone()),
+                Sort::Array(inner) => {
+                    // Array element type must be Field
+                    if !matches!(inner.key, Sort::Field(_)) {
+                        panic!(
+                            "Poseidon: array arg {} must have element sort Field, got {}",
+                            i, inner.key
+                        );
+                    }
+                    for e in t.cs() {
+                        out.push(self.get_field(&e)?.clone());
+                    }
+                }
+                other => {
+                    panic!(
+                        "Poseidon: unsupported arg sort at index {}: {} (expected Field or Array(Field,_))",
+                        i, other
+                    );
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Flatten any container of Fields (Field | Tuple-of-Field | Array-of-Field).
+    fn flatten_fields_any(&mut self, root: &Term) -> Result<Vec<AssignedNative<F>>, Error> {
+        let mut out = Vec::<AssignedNative<F>>::new();
+        let mut stack: Vec<Term> = vec![root.clone()];
+        while let Some(node) = stack.pop() {
+            match check(&node) {
+                Sort::Field(_) => out.push(self.get_field(&node)?.clone()),
+                Sort::Tuple(items) => {
+                    let cs = node.cs();
+                    if items.len() != cs.len() {
+                        panic!(
+                            "tuple arity mismatch (decl {} vs term {})",
+                            items.len(),
+                            cs.len()
+                        );
+                    }
+                    // push reversed to preserve original order when popping
+                    for ch in cs.iter().rev() {
+                        stack.push(ch.clone());
+                    }
+                }
+                Sort::Array(arr) => {
+                    if !matches!(arr.key, Sort::Field(_)) {
+                        panic!("array element must be Field, got {}", arr.key);
+                    }
+                    for ch in node.cs().iter().rev() {
+                        stack.push(ch.clone());
+                    }
+                }
+                other => panic!("expected Field/tuple/array of Field, got {}", other),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Collect bytes (BV(8)) from any container, ensuring exactly 32 bytes.
+    fn collect_32_bytes(&mut self, t: &Term) -> Result<[AssignedByte<F>; 32], Error> {
+        let mut v = self.collect_bytes(t)?; // your existing helper returning Vec<AssignedByte<F>>
+        if v.len() != 32 {
+            panic!("expected exactly 32 bytes, got {}", v.len());
+        }
+        // Vec -> [T; 32]
+        let boxed: Box<[AssignedByte<F>]> = v.into_boxed_slice();
+        let boxed: Box<[AssignedByte<F>; 32]> = boxed.try_into().map_err(|_| Error::Synthesis)?;
+        Ok(*boxed)
     }
 
     // -------------------------
@@ -823,34 +905,6 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                 Op::UndefinedFnCall(call) => {
                     let arg_terms = c.cs();
 
-                    let mut flatten_field_args =
-                        |terms: &[Term], sorts: &[Sort]| -> Result<Vec<AssignedNative<F>>, Error> {
-                            let mut out = Vec::<AssignedNative<F>>::new();
-                            for (i, t) in terms.iter().enumerate() {
-                                match &sorts[i] {
-                                    Sort::Field(_) => out.push(self.get_field(t)?.clone()),
-                                    Sort::Array(inner) => {
-                                        if !matches!(inner.key, Sort::Field(_)) {
-                                            panic!(
-                                                "Poseidon: array arg {} must have element sort Field, got {}",
-                                                i, inner.key
-                                            );
-                                        }
-                                        for e in t.cs() {
-                                            out.push(self.get_field(&e)?.clone());
-                                        }
-                                    }
-                                    other => {
-                                        panic!(
-                                            "Poseidon: unsupported arg sort at index {}: {} (expected Field, Array(Field,_))",
-                                            i, other
-                                        );
-                                    }
-                                }
-                            }
-                            Ok(out)
-                        };
-
                     match call.name.as_str() {
                         "PlonkMul2" => {
                             if !matches!(call.ret_sort, Sort::Field(_)) {
@@ -875,12 +929,92 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                                     call.name, call.ret_sort
                                 );
                             }
-                            let inputs = flatten_field_args(&arg_terms, &call.arg_sorts)?;
+                            let inputs = self.flatten_field_args(&arg_terms, &call.arg_sorts)?;
                             if inputs.is_empty() {
                                 panic!("midnight_poseidon: need at least one field input");
                             }
                             let h = self.poseidon_hash(&inputs)?;
                             AssignedTerm::Field(h)
+                        }
+                        "midnight_hybrid_mt" => {
+                            // Expect 3 arguments: leaf_bytes, siblings, positions
+                            if arg_terms.len() != 3 {
+                                panic!(
+                                    "midnight_hybrid_mt expects 3 arguments (leaf_bytes, siblings, positions); got {}",
+                                    arg_terms.len()
+                                );
+                            }
+
+                            // 1) Leaf: 32 bytes BV(8)
+                            let leaf_bytes: [AssignedByte<F>; 32] =
+                                self.collect_32_bytes(&arg_terms[0])?;
+
+                            // 2) Siblings: Field[]
+                            let siblings: Vec<AssignedNative<F>> =
+                                self.flatten_fields_any(&arg_terms[1])?;
+
+                            // 3) Positions: Field[] (each 0/1) -> AssignedBit
+                            let pos_fields: Vec<AssignedNative<F>> =
+                                self.flatten_fields_any(&arg_terms[2])?;
+                            if siblings.len() != pos_fields.len() {
+                                panic!(
+                                    "midnight_hybrid_mt: siblings and positions length mismatch ({} vs {})",
+                                    siblings.len(),
+                                    pos_fields.len()
+                                );
+                            }
+                            let pos_bits: Vec<AssignedBit<F>> = pos_fields
+                                .iter()
+                                .map(|p| self.std.convert(self.lay, p))
+                                .collect::<Result<_, _>>()?;
+
+                            // Compute SHA256(leaf_bytes)
+                            let digest: [AssignedByte<F>; 32] =
+                                self.std.sha256(self.lay, &leaf_bytes)?;
+
+                            // Digest bytes -> 8 words (big-endian, 4 bytes each)
+                            let words: Vec<AssignedNative<F>> = digest
+                                .chunks(4)
+                                .map(|w4| self.std.assigned_from_be_bytes(self.lay, w4))
+                                .collect::<Result<Vec<_>, _>>()?;
+
+                            // lo = 2^96*w0 + 2^64*w1 + 2^32*w2 + w3
+                            // hi = 2^96*w4 + 2^64*w5 + 2^32*w6 + w7
+                            let lo = self.std.linear_combination(
+                                self.lay,
+                                &[
+                                    (F::from_u128(1u128 << 96), words[0].clone()),
+                                    (F::from_u128(1u128 << 64), words[1].clone()),
+                                    (F::from_u128(1u128 << 32), words[2].clone()),
+                                    (F::ONE, words[3].clone()),
+                                ],
+                                F::ZERO,
+                            )?;
+                            let hi = self.std.linear_combination(
+                                self.lay,
+                                &[
+                                    (F::from_u128(1u128 << 96), words[4].clone()),
+                                    (F::from_u128(1u128 << 64), words[5].clone()),
+                                    (F::from_u128(1u128 << 32), words[6].clone()),
+                                    (F::ONE, words[7].clone()),
+                                ],
+                                F::ZERO,
+                            )?;
+
+                            let zero: AssignedNative<F> =
+                                self.std.assign_fixed(self.lay, F::ZERO)?;
+
+                            // Leaf node = Poseidon(lo, hi, 0)
+                            let mut acc = self.std.poseidon(self.lay, &[lo, hi, zero.clone()])?;
+
+                            // Fold siblings up the tree (left/right determined by pos bit)
+                            for (sib, b) in siblings.iter().zip(pos_bits.iter()) {
+                                let left = self.std.select(self.lay, b, &acc, sib)?; // if b=1 -> acc (node) is left, else sibling
+                                let right = self.std.select(self.lay, b, sib, &acc)?; // if b=1 -> sibling is right, else acc
+                                acc = self.std.poseidon(self.lay, &[left, right, zero.clone()])?;
+                            }
+
+                            AssignedTerm::Field(acc)
                         }
                         other => {
                             panic!("UndefinedFnCall '{}' not implemented in embed_pf", other);

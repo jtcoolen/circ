@@ -7,12 +7,17 @@ struct Bar {
     u8[32] resu
 }
 
+const u32 TREE_HEIGHT = 2u32
+
 struct Pt {
     field x
     field y
+    u8[32] leaf
+    field[TREE_HEIGHT - 1] siblings
+    field[TREE_HEIGHT - 1] positions
 }
 
-def main(private Pt v) -> Bar :
+def main(private Pt v, field public_root) -> Bar :
     field z = PlonkMul2(v.x)
 
     field result = poseidon([v.y])
@@ -20,6 +25,9 @@ def main(private Pt v) -> Bar :
 
     u8[1] b = [1]
     u8[32] resu = midnight_sha256(b)
+
+    field computed = midnight_hybrid_mt(v.leaf, v.siblings, v.positions)
+    assert(computed == public_root)
 
     u8 a = 142
     u8 mod = 6
