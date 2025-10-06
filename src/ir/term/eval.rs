@@ -8,7 +8,6 @@ use super::{
 use log::trace;
 
 use crate::cfg::cfg_or_default;
-use crate::ir::opt::sha;
 use circ_fields::{FieldT, FieldV};
 use once_cell::sync::Lazy;
 use rug::integer::Order;
@@ -517,7 +516,6 @@ pub fn eval_op(op: &Op, args: &[&Value], var_vals: &FxHashMap<String, Value>) ->
                     );
 
                     // 2) Ensure all fields are the same type; capture that type for the result
-                    let mut fty_opt: Option<crate::ir::term::FieldT> = None;
                     let mut u8_vs = Vec::with_capacity(flat_vals.len());
                     for v in flat_vals {
                         let f = v.as_bv().clone();

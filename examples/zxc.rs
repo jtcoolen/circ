@@ -9,6 +9,7 @@ use bellman::Circuit;
 use bls12_381::{Bls12, Scalar};
 */
 use ark_bls12_381::Fr;
+use blake2b_simd::Hash;
 use circ::front::zsharp::{self, ZSharpFE};
 use circ::front::{FrontEnd, Mode};
 use circ::ir::opt::{opt, Opt};
@@ -2643,7 +2644,7 @@ fn main() {
             Opt::Tuple,
             Opt::LinearScan,
             // The linear scan pass produces more tuples, that must be eliminated
-            Opt::Tuple,
+            //Opt::Tuple,
             Opt::Flatten,
             Opt::ConstantFold(Box::new([])),
             Opt::Inline,
@@ -2906,36 +2907,76 @@ fn main() {
     println!("verifying: {:?}", start.elapsed());*/
 
     // TODO hook up witness generation tool (zxi interpreter)
-    let mut assign: HashMap<String, InputValue> = build_merkle_assignment_height32();
-    assign.insert("v.x".into(), InputValue::Field(f_from_dec("1")));
-    assign.insert("v.y".into(), InputValue::Field(f_from_dec("2")));
+    let mut assign: HashMap<String, InputValue> = HashMap::new(); //build_merkle_assignment_height32();
+                                                                  /*assign.insert("v.x".into(), InputValue::Field(f_from_dec("1")));
+                                                                  assign.insert("v.y".into(), InputValue::Field(f_from_dec("2")));
 
-    assign.insert("return.a".into(), InputValue::Byte(4));
-    assign.insert(
-        "return.b".into(),
-        InputValue::Field(f_from_dec(
-            "50392767758313956917667316955031827721960740831303956600582261269036067402118",
-        )),
-    );
-    assign.insert(
-        "return.c".into(),
-        InputValue::Field(f_from_dec(
-            "674438398409480172400885812943766143516309774576089581007637451837316835265",
-        )),
-    );
-    let resu_bytes = vec![
-        0x4b, 0xf5, 0x12, 0x2f, 0x34, 0x45, 0x54, 0xc5, 0x3b, 0xde, 0x2e, 0xbb, 0x8c, 0xd2, 0xb7,
-        0xe3, 0xd1, 0x60, 0x0a, 0xd6, 0x31, 0xc3, 0x85, 0xa5, 0xd7, 0xcc, 0xe2, 0x3c, 0x77, 0x85,
-        0x45, 0x9a,
-    ];
-    // Change one or two bytes and you will see verification fail :)
-    for (idx, byte) in resu_bytes.iter().enumerate() {
-        assign.insert(format!("return.resu.{}", idx), InputValue::Byte(*byte));
+                                                                  assign.insert("return.a".into(), InputValue::Byte(4));
+                                                                  assign.insert(
+                                                                      "return.b".into(),
+                                                                      InputValue::Field(f_from_dec(
+                                                                          "50392767758313956917667316955031827721960740831303956600582261269036067402118",
+                                                                      )),
+                                                                  );
+                                                                  assign.insert(
+                                                                      "return.c".into(),
+                                                                      InputValue::Field(f_from_dec(
+                                                                          "674438398409480172400885812943766143516309774576089581007637451837316835265",
+                                                                      )),
+                                                                  );
+                                                                  let resu_bytes = vec![
+                                                                      0x4b, 0xf5, 0x12, 0x2f, 0x34, 0x45, 0x54, 0xc5, 0x3b, 0xde, 0x2e, 0xbb, 0x8c, 0xd2, 0xb7,
+                                                                      0xe3, 0xd1, 0x60, 0x0a, 0xd6, 0x31, 0xc3, 0x85, 0xa5, 0xd7, 0xcc, 0xe2, 0x3c, 0x77, 0x85,
+                                                                      0x45, 0x9a,
+                                                                  ];
+                                                                  // Change one or two bytes and you will see verification fail :)
+                                                                  for (idx, byte) in resu_bytes.iter().enumerate() {
+                                                                      assign.insert(format!("return.resu.{}", idx), InputValue::Byte(*byte));
+                                                                  }*/
+
+    assign.insert("is_genesis".into(), InputValue::Bool(true));
+
+    for i in 0..62 {
+        assign.insert(
+            format!("prev_acc.{}", i),
+            InputValue::Field(f_from_dec("2")),
+        );
     }
+
+    for i in 0..62 {
+        assign.insert(
+            format!("return.next_acc.{}", i),
+            InputValue::Field(f_from_dec("2")),
+        );
+    }
+    assign.insert(
+        "return.next_state".into(),
+        InputValue::Field(f_from_dec("2")),
+    );
 
     // 1) Build the relation wrapper
     let relation: circ::target::halo2::trans::IrRelation<'_> =
         to_midnight_relation(&cs.get("main"), cfg());
+
+    //ark_std::println!("circuit size = {}", relation.);
+    // 2) SRS / VK / PK
+    // TODO compute k from circuit
+    let k = 13; // pick an adequate k; or compute with relation.midnight min_k (see m::k_from_circuit)
+
+    let mut srs: ParamsKZG<Bls12> = filecoin_srs(k);
+    let vk = m::setup_vk(&srs, &relation);
+    let pk = m::setup_pk(&relation, &vk);
+
+    let rep = vk.vk().transcript_repr().to_bytes_be();
+    assign.insert(
+        "vk.0".into(),
+        InputValue::Field(F::from_bytes_be(&rep).unwrap()),
+    );
+    assign.insert("vk.1".into(), InputValue::Field(f_from_dec("2")));
+    assign.insert("prev_state".into(), InputValue::Field(f_from_dec("2")));
+    for i in 0..6240 {
+        assign.insert(format!("prev_proof.{}", i), InputValue::Byte(2));
+    }
 
     let instance: Vec<InputValue> = relation
         .public_names
@@ -2959,15 +3000,6 @@ fn main() {
         })
         .collect();
 
-    //ark_std::println!("circuit size = {}", relation.);
-    // 2) SRS / VK / PK
-    // TODO compute k from circuit
-    let k = 13; // pick an adequate k; or compute with relation.midnight min_k (see m::k_from_circuit)
-
-    let mut srs: ParamsKZG<Bls12> = filecoin_srs(k);
-    let vk = m::setup_vk(&srs, &relation);
-    let pk = m::setup_pk(&relation, &vk);
-
     // 3) Prove
     let now = Instant::now();
     let proof = m::prove::<_, Blake2b>(&srs, &pk, &relation, &instance, witness, rand::rngs::OsRng)
@@ -2975,6 +3007,13 @@ fn main() {
     ark_std::println!("prove ({:?})", now.elapsed());
 
     let now = Instant::now();
+    println!(
+        "nb public inputs = {}, {}",
+        instance.len(),
+        vk.nb_public_inputs
+    );
+
+    //println!("public inputs = {:?}", relation.public_names);
     // 4) Verify
     let res =
         m::verify::<IrRelation<'_>, Blake2b>(&srs.verifier_params(), &vk, &instance, None, &proof)
