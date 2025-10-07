@@ -1212,7 +1212,7 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                             )?;
                             self.std.collapse_accumulator(self.lay, &mut proof_acc)?;
 
-                            let mut next_acc =
+                            let mut next_acc: AssignedAccumulator<BlstrsEmulation> =
                                 self.std.accumulate(self.lay, &[proof_acc, prev_acc])?;
                             self.std.collapse_accumulator(self.lay, &mut next_acc)?;
 

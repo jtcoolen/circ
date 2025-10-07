@@ -2973,9 +2973,10 @@ fn main() {
         InputValue::Field(F::from_bytes_be(&rep).unwrap()),
     );
     //assign.insert("vk.1".into(), InputValue::Field(f_from_dec("2")));
-    assign.insert("prev_state".into(), InputValue::Field(f_from_dec("2")));
+    assign.insert("prev_state".into(), InputValue::Field(f_from_dec("0")));
+    // dummy prev proof
     for i in 0..6240 {
-        assign.insert(format!("prev_proof.{}", i), InputValue::Byte(2));
+        assign.insert(format!("prev_proof.{}", i), InputValue::Byte(0));
     }
 
     let instance: Vec<InputValue> = relation
