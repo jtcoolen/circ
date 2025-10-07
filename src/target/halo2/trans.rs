@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use ark_ff::Zero;
+use log::{debug, info};
 use midnight_circuits::field::decomposition::chip::P2RDecompositionChip;
 use midnight_circuits::field::NativeChip;
 use midnight_circuits::field::NativeGadget;
@@ -49,7 +50,6 @@ use midnight_proofs::{
     plonk::Error,
 };
 use std::convert::TryInto;
-use log::{info, debug};
 
 // copied from midnight, make it public upstream?
 pub(crate) const LOG2_BASE: u32 = 96;
@@ -342,7 +342,10 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                         stack.push(ch.clone());
                     }
                 }
-                other => panic!("expected Field/tuple/array of Field, got {} : {}", node, other),
+                other => panic!(
+                    "expected Field/tuple/array of Field, got {} : {}",
+                    node, other
+                ),
             }
         }
         Ok(out)
@@ -1068,19 +1071,18 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                             ark_std::println!("args[2] = {}", args[2]);
                             ark_std::println!("args[3] = {}", args[3]);
                             ark_std::println!("args[4] = {}", args[4]);
-                            
+
                             // 0) vk : field
                             let vk_field = self.get_field(&args[0])?;
-                         
+
                             // Value<&F> → Value<F>
                             let vk_repr_val = vk_field.clone();
 
                             // 1) is_genesis : field(0/1) → AssignedBit via equality-to-one
                             let is_genesis_f = self.get_bit(&args[1]).unwrap().clone();
-                            //let is_not_genesis =
-                            //    self.std
-                            //        .is_equal_to_fixed(self.lay, &is_genesis_f, false)?;
-                            //let is_genesis = self.std.not(self.lay, &is_not_genesis)?;
+                            let is_not_genesis =
+                                self.std.is_equal_to_fixed(self.lay, &is_genesis_f, false)?;
+                            let is_genesis = self.std.not(self.lay, &is_not_genesis)?;
 
                             // 2) prev_state : field (becomes part of the verifier PI vector)
                             let prev_state = self.get_field(&args[2])?.clone();
@@ -1099,41 +1101,41 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                             let proof_bytes_v: Value<Vec<u8>> =
                                 proof_bytes_v.iter().map(|b| b.value()).collect();
                             // ---- Local CS + domain (since we don't have self.self_cs / self.self_domain) ------------
-                            //let mut tmp_cs: ConstraintSystem<F> = ConstraintSystem::default();
-                            //midnight_circuits::compact_std_lib::ZkStdLib::configure(
-                            //    &mut tmp_cs,
-                            //    midnight_circuits::compact_std_lib::ZkStdLibArch::default(),
-                            //);
-                            //let domain = EvaluationDomain::new(tmp_cs.degree() as u32, 19);
+                            let mut tmp_cs: ConstraintSystem<F> = ConstraintSystem::default();
+                            midnight_circuits::compact_std_lib::ZkStdLib::configure(
+                                &mut tmp_cs,
+                                midnight_circuits::compact_std_lib::ZkStdLibArch::default(),
+                            );
+                            let domain = EvaluationDomain::new(tmp_cs.degree() as u32, 19);
 
                             // ---- Verifier wiring via std-lib gadgets ------------------------------------------------
                             // Assign self VK as public input
                             let self_vk_name = "self_vk";
                             // We expect a finalized cs with no selectors, i.e. whose selectors have been
                             // converted into fixed columns.
-                            //let selectors = vec![vec![false]; tmp_cs.num_selectors()];
-                            //let (processed_cs, _) = tmp_cs
-                            //    .clone()
-                            //    .directly_convert_selectors_to_fixed(selectors);
+                            let selectors = vec![vec![false]; tmp_cs.num_selectors()];
+                            let (processed_cs, _) = tmp_cs
+                                .clone()
+                                .directly_convert_selectors_to_fixed(selectors);
 
                             // Beware there be dragons!
-                            //let prev_acc_f: Vec<F> = prev_acc_fields
-                            //    .clone()
-                            //    .into_iter()
-                            //    .map(|e| e.value().into_option().unwrap().clone())
-                            //    .collect();
+                            let prev_acc_f: Vec<F> = prev_acc_fields
+                                .clone()
+                                .into_iter()
+                                .map(|e| e.value().into_option().unwrap().clone())
+                                .collect();
                             // off-circuit accumulator; we need to link
-                   
-                            /*let prev_acc: Accumulator<_> =
+
+                            let prev_acc: Accumulator<_> =
                                 AssignedAccumulator::from_public_input(prev_acc_f, 1);
                             let mut prev_acc = self.std.verifier_assign_accumulator_from_witness(
                                 self.lay,
                                 self_vk_name,
                                 &tmp_cs,
                                 Value::known(prev_acc),
-                            )?;*/
+                            )?;
                             // enforce equality -- we should maybe optimise this with less created variables
-                            /*let res: Vec<AssignedNative<F>> =
+                            let res: Vec<AssignedNative<F>> =
                                 self.std.verifier().as_public_input(self.lay, &prev_acc)?;
                             for e in res.into_iter().zip_eq(prev_acc_fields.iter()) {
                                 self.std.assert_equal(self.lay, &e.0, e.1)?;
@@ -1145,19 +1147,6 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                                 cs: tmp_cs,
                                 transcript_repr: vk_repr_val,
                             };
-
-                            // {
-                            //     // Treat prev_acc_fields as the only PI slice; pass empty proof bytes
-                            //     let mut acc = self.std.verifier_prepare_partial_plonk(
-                            //         self.lay,
-                            //         &assigned_vk,
-                            //         &[("com_instance", id_point.clone())],
-                            //         &[&prev_acc_fields],
-                            //         Value::unknown(), // dummy
-                            //     )?;
-                            //     self.std.collapse_accumulator(self.lay, &mut acc)?;
-                            //     acc
-                            // };
 
                             // Committed-instance binding point (default to avoid group trait version pinning)
                             let id_point = self.std.verifier_identity_point(self.lay)?;
@@ -1183,14 +1172,14 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                                 &is_not_genesis,
                                 &mut proof_acc,
                             )?;
-                            self.std.collapse_accumulator(self.lay, &mut proof_acc)?;*/
+                            self.std.collapse_accumulator(self.lay, &mut proof_acc)?;
 
-                            //let mut next_acc =
-                            //    self.std.accumulate(self.lay, &[ ])?;
-                            //self.std.collapse_accumulator(self.lay, &mut next_acc)?;
+                            let mut next_acc =
+                                self.std.accumulate(self.lay, &[proof_acc, prev_acc])?;
+                            self.std.collapse_accumulator(self.lay, &mut next_acc)?;
 
-                            //let next_acc_field_elts =
-                            //    self.std.verifier().as_public_input(self.lay, &next_acc)?;
+                            let next_acc_field_elts =
+                                self.std.verifier().as_public_input(self.lay, &next_acc)?;
                             // Return field[ACC_SIZE] (same encoding)
                             AssignedTerm::Tuple(
                                 prev_acc_fields
