@@ -2969,10 +2969,10 @@ fn main() {
 
     let rep = vk.vk().transcript_repr().to_bytes_be();
     assign.insert(
-        "vk.0".into(),
+        "vk".into(),
         InputValue::Field(F::from_bytes_be(&rep).unwrap()),
     );
-    assign.insert("vk.1".into(), InputValue::Field(f_from_dec("2")));
+    //assign.insert("vk.1".into(), InputValue::Field(f_from_dec("2")));
     assign.insert("prev_state".into(), InputValue::Field(f_from_dec("2")));
     for i in 0..6240 {
         assign.insert(format!("prev_proof.{}", i), InputValue::Byte(2));
@@ -3010,7 +3010,7 @@ fn main() {
     println!(
         "nb public inputs = {}, {}",
         instance.len(),
-        vk.nb_public_inputs
+        vk.nb_public_inputs,
     );
 
     //println!("public inputs = {:?}", relation.public_names);
