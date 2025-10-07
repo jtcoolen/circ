@@ -342,6 +342,40 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                         stack.push(ch.clone());
                     }
                 }
+                Sort::Bool => {
+                    // Coerce Bool -> Field(0/1)
+                    let b = self.get_bit(&node)?.clone();
+                    let one = self.std.assign_fixed(self.lay, F::ONE)?;
+                    let zero = self.std.assign_fixed(self.lay, F::ZERO)?;
+                    let as_f = self.std.select(self.lay, &b, &one, &zero)?;
+                    out.push(as_f);
+                }
+                // NEW: coerce BV(8) byte -> Field(b)
+                Sort::BitVector(8) => {
+                    let by = self.get_byte(&node)?.clone();
+                    // assigned_from_be_bytes accepts a slice of AssignedByte<F>
+                    let as_f = self
+                        .std
+                        .assigned_from_be_bytes(self.lay, std::slice::from_ref(&by))?;
+                    out.push(as_f);
+                }
+
+                // (optional) generic BV(n): recompose its BigUint to a Field
+                Sort::BitVector(_) => {
+                    let big = self.get_bv_big(&node)?; // AssignedBigUint<F>
+                                                       // x = Σ_i limbs[i] * (2^LOG2_BASE)^i
+                    let base = F::from_u128(1u128 << LOG2_BASE);
+                    let mut coeff = F::ONE;
+                    let mut terms: Vec<(F, AssignedNative<F>)> =
+                        Vec::with_capacity(big.limbs.len());
+                    for limb in big.limbs.iter() {
+                        terms.push((coeff, limb.clone()));
+                        coeff = coeff * base;
+                    }
+                    let x = self.std.linear_combination(self.lay, &terms, F::ZERO)?;
+                    out.push(x);
+                }
+
                 other => panic!(
                     "expected Field/tuple/array of Field, got {} : {}",
                     node, other
@@ -1089,7 +1123,7 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
 
                             // 3) prev_acc : field[ACC_SIZE] (flat PI encoding we can splice directly)
                             let prev_acc_fields: Vec<AssignedNative<F>> =
-                                self.flatten_fields_any(&args[0])?;
+                                self.flatten_fields_any(&args[3])?;
                             if prev_acc_fields.is_empty() {
                                 panic!("prev_acc must be non-empty");
                             }
@@ -1182,7 +1216,7 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                                 self.std.verifier().as_public_input(self.lay, &next_acc)?;
                             // Return field[ACC_SIZE] (same encoding)
                             AssignedTerm::Tuple(
-                                prev_acc_fields
+                                next_acc_field_elts
                                     .into_iter()
                                     .map(AssignedTerm::Field)
                                     .collect::<Vec<AssignedTerm>>(),
@@ -1571,7 +1605,7 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                     let eq = self.big.is_equal(self.lay, &ax, &bx)?;
                     self.std.assert_true(self.lay, &eq)
                 }
-                Sort::Array(_) => {
+                /*Sort::Array(_) => {
                     // TODO we support array of fields only for now
                     //println!("assert_bool Eq on arrays: {}", a);
                     println!("a {}", a.id());
@@ -1592,6 +1626,80 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                     }
                     let all_eq = self.nary_and(&eqs)?;
                     self.std.assert_true(self.lay, &all_eq)
+                }*/
+                Sort::Array(arr) => {
+                    let acs = a.cs();
+                    let bcs = b.cs();
+                    assert!(
+                        acs.len() == bcs.len(),
+                        "assert_bool Eq on arrays of different lengths: {} vs {}",
+                        acs.len(),
+                        bcs.len()
+                    );
+
+                    match &arr.val {
+                        // Field[] → flatten then field equality
+                        Sort::Field(_) => {
+                            let a_fields = self.flatten_fields_any(a)?;
+                            let b_fields = self.flatten_fields_any(b)?;
+                            let mut eqs = Vec::with_capacity(a_fields.len());
+                            for (x, y) in a_fields.iter().zip(b_fields.iter()) {
+                                eqs.push(self.std.is_equal(self.lay, x, y)?);
+                            }
+                            let all = self.nary_and(&eqs)?;
+                            self.std.assert_true(self.lay, &all)
+                        }
+
+                        // u8[] → bytewise equality
+                        Sort::BitVector(8) => {
+                            let mut eqs = Vec::with_capacity(acs.len());
+                            for i in 0..acs.len() {
+                                let ax = self.get_byte(&acs[i])?.clone();
+                                let bx = self.get_byte(&bcs[i])?.clone();
+                                eqs.push(self.std.is_equal(self.lay, &ax, &bx)?);
+                            }
+                            let all = self.nary_and(&eqs)?;
+                            self.std.assert_true(self.lay, &all)
+                        }
+
+                        // BV[n][] → biguint equality
+                        Sort::BitVector(_) => {
+                            let mut eqs = Vec::with_capacity(acs.len());
+                            for i in 0..acs.len() {
+                                let ax = self.get_bv_big(&acs[i])?;
+                                let bx = self.get_bv_big(&bcs[i])?;
+                                eqs.push(self.big.is_equal(self.lay, &ax, &bx)?);
+                            }
+                            let all = self.nary_and(&eqs)?;
+                            self.std.assert_true(self.lay, &all)
+                        }
+
+                        // Bool[] → bit equality
+                        Sort::Bool => {
+                            let mut eqs = Vec::with_capacity(acs.len());
+                            for i in 0..acs.len() {
+                                let ab = self.get_bit(&acs[i])?.clone();
+                                let bb = self.get_bit(&bcs[i])?.clone();
+                                eqs.push(self.bits_equal(&ab, &bb)?);
+                            }
+                            let all = self.nary_and(&eqs)?;
+                            self.std.assert_true(self.lay, &all)
+                        }
+
+                        // Nested tuples/arrays → recurse per element
+                        Sort::Tuple(_) | Sort::Array(_) => {
+                            let mut eq_bits = Vec::with_capacity(acs.len());
+                            for i in 0..acs.len() {
+                                let ei = term![Op::Eq; acs[i].clone(), bcs[i].clone()];
+                                self.assert_bool(&ei)?; // builds constraints for nested equality
+                                eq_bits.push(self.get_bit(&ei)?.clone());
+                            }
+                            let all = self.nary_and(&eq_bits)?;
+                            self.std.assert_true(self.lay, &all)
+                        }
+
+                        other => panic!("Eq on unsupported array element sort: {}", other),
+                    }
                 }
                 _sort => panic!("Eq on unsupported sort {}", _sort),
             }
