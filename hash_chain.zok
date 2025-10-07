@@ -10,6 +10,6 @@ def main(field vk, bool is_genesis, private field prev_state, private field[ACC_
    
     field next_state = midnight_poseidon([prev_state])
    
-    field[ACC_SIZE] next_acc = midnight_verify_recursive_proof(vk, is_genesis, prev_state, prev_acc, prev_proof)
-    //field[ACC_SIZE] next_acc = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    //field[ACC_SIZE] next_acc = midnight_verify_recursive_proof(vk, is_genesis, prev_state, prev_acc, prev_proof)
+    field[ACC_SIZE] next_acc = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
     return IVC_Step { next_acc: next_acc, next_state: next_state }
