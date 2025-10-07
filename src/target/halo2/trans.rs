@@ -664,8 +664,12 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         if self.cache.contains_key(var) {
             return Ok(());
         }
-        if !self.used_vars.contains(var.as_var_name()) {
-            return Ok(()); // dead var skip
+        //if !self.used_vars.contains(var.as_var_name()) {
+        //    return Ok(()); // dead var skip
+        //}
+        // Only skip dead *witness* vars. Keep all public vars.
+        if !matches!(ty, VarType::Inst) && !self.used_vars.contains(var.as_var_name()) {
+            return Ok(());
         }
         let Op::Var(v) = var.op() else {
             panic!("embed_var expects Op::Var")
@@ -689,9 +693,9 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                 } else {
                     self.std.assign(self.lay, as_bool)?
                 };
-                if is_public {
-                    self.std.constrain_as_public_input(self.lay, &b)?;
-                }
+                //if is_public {
+                //    self.std.constrain_as_public_input(self.lay, &b)?;
+                //}
                 self.cache.insert(var.clone(), AssignedTerm::Bit(b));
             }
             Sort::Field(fsort) => {
