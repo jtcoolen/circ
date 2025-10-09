@@ -710,23 +710,23 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         use midnight_circuits::verifier::AssignedVk;
         use midnight_proofs::{plonk::ConstraintSystem, poly::EvaluationDomain};
 
-        let mut tmp_cs: ConstraintSystem<F> = ConstraintSystem::default();
+        let mut raw_cs: ConstraintSystem<F> = ConstraintSystem::default();
+
         let mut arch = m::ZkStdLibArch::default();
         arch.verifier = true;
-        m::ZkStdLib::configure(&mut tmp_cs, arch);
-        let domain = EvaluationDomain::new(tmp_cs.degree() as u32, 19);
+        m::ZkStdLib::configure(&mut raw_cs, arch);
+        let (cs_no_selectors, _fixed_cols) = raw_cs
+            .clone()
+            .directly_convert_selectors_to_fixed(vec![vec![false]; raw_cs.num_selectors()]);
+
+        let domain = EvaluationDomain::new(cs_no_selectors.degree() as u32, 19);
 
         let self_vk_name = "self_vk";
-        let selectors = vec![vec![false]; tmp_cs.num_selectors()];
-        let (processed_cs, _) = tmp_cs
-            .clone()
-            .directly_convert_selectors_to_fixed(selectors);
-        let _ = processed_cs; // keep in case you wire it into AssignedVk later
 
         let assigned_vk = AssignedVk {
             vk_name: self_vk_name.to_string(),
             domain: domain.clone(),
-            cs: tmp_cs,
+            cs: cs_no_selectors,
             transcript_repr: vk_field,
         };
 
@@ -753,19 +753,43 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
             .accumulator_scale_by_bit(self.lay, &is_not_genesis, &mut proof_acc)?;
         self.std.collapse_accumulator(self.lay, &mut proof_acc)?;
 
+        println!(
+            "prev acc fields (len = {}) {:?}",
+            prev_acc_fields.len(),
+            prev_acc_fields
+        );
         // Link the provided prev_acc (as witness) to its expected PI encoding
-        let prev_acc_f: Vec<F> = prev_acc_fields
-            .iter()
-            .map(|e| e.value().into_option().unwrap().clone())
-            .collect();
-        let prev_acc_pi_enc =
-            AssignedAccumulator::<BlstrsEmulation>::from_public_input(prev_acc_f, 1);
+        //let prev_acc_f: Vec<F> = prev_acc_fields
+        //    .iter()
+        //    .map(|e| e.value().into_option().unwrap().clone())
+        ///    .collect();
+        // let prev_acc_pi_enc =
+        //    AssignedAccumulator::<BlstrsEmulation>::from_public_input(prev_acc_f, 1);
+        //let mut prev_acc = self.std.verifier_assign_accumulator_from_witness(
+        //    self.lay,
+        //   self_vk_name,
+        //   &assigned_vk.cs,
+        //   Value::known(prev_acc_pi_enc),
+        //)?;
         let mut prev_acc = self.std.verifier_assign_accumulator_from_witness(
             self.lay,
             self_vk_name,
-            &assigned_vk.cs,
-            Value::known(prev_acc_pi_enc),
+            &assigned_vk.cs,  // <-- processed, selector-free CS
+            Value::unknown(), // <-- IMPORTANT: do NOT try to build it from concrete F's
         )?;
+
+        // Enforce that its public-input encoding equals the provided field array.
+        let prev_acc_pi_as_fields: Vec<AssignedNative<F>> =
+            self.std.verifier().as_public_input(self.lay, &prev_acc)?;
+        assert!(
+            prev_acc_pi_as_fields.len() == prev_acc_fields.len(),
+            "midnight_ivc: accumulator PI length mismatch ({} vs {})",
+            prev_acc_pi_as_fields.len(),
+            prev_acc_fields.len()
+        );
+        for (x, y) in prev_acc_pi_as_fields.iter().zip(prev_acc_fields.iter()) {
+            self.std.assert_equal(self.lay, x, y)?; // ties witness struct to your field vector
+        }
 
         // Accumulate and collapse to next_acc
         let mut next_acc = self.std.accumulate(self.lay, &[proof_acc, prev_acc])?;

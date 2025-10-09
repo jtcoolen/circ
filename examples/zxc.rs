@@ -2941,7 +2941,7 @@ fn main() {
     //ark_std::println!("circuit size = {}", relation.);
     // 2) SRS / VK / PK
     // TODO compute k from circuit
-    let k = 14; // pick an adequate k; or compute with relation.midnight min_k (see m::k_from_circuit)
+    let k = 21; // pick an adequate k; or compute with relation.midnight min_k (see m::k_from_circuit)
 
     let mut srs: ParamsKZG<Bls12> = filecoin_srs(k);
     let vk = m::setup_vk(&srs, &relation);

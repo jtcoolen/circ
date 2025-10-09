@@ -1,4 +1,4 @@
-const u32 ACC_SIZE = 78u32
+const u32 ACC_SIZE = 93u32
 const u32 ACC_SIZE_OUT = 5u32
 const u32 PROOF_SIZE = 6240u32
 
