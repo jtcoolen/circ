@@ -2934,26 +2934,6 @@ fn main() {
                                                                       assign.insert(format!("return.resu.{}", idx), InputValue::Byte(*byte));
                                                                   }*/
 
-    assign.insert("is_genesis".into(), InputValue::Bool(true));
-
-    for i in 0..62 {
-        assign.insert(
-            format!("prev_acc.{}", i),
-            InputValue::Field(f_from_dec("2")),
-        );
-    }
-
-    for i in 0..62 {
-        assign.insert(
-            format!("return.next_acc.{}", i),
-            InputValue::Field(f_from_dec("2")),
-        );
-    }
-    assign.insert(
-        "return.next_state".into(),
-        InputValue::Field(f_from_dec("2")),
-    );
-
     // 1) Build the relation wrapper
     let relation: circ::target::halo2::trans::IrRelation<'_> =
         to_midnight_relation(&cs.get("main"), cfg());
@@ -2967,14 +2947,79 @@ fn main() {
     let vk = m::setup_vk(&srs, &relation);
     let pk = m::setup_pk(&relation, &vk);
 
+    // ==================
+    use midnight_circuits::halo2curves::group::Group;
+    use midnight_circuits::{
+        hash::poseidon::PoseidonChip,
+        types::{AssignedNative, ComposableChip, Instantiable},
+        verifier::{self, Accumulator, AssignedAccumulator, BlstrsEmulation, Msm, SelfEmulation},
+    };
+    use std::collections::BTreeMap;
+
+    type S = BlstrsEmulation;
+    type Fmm = <S as SelfEmulation>::F;
+    type C = <S as SelfEmulation>::C;
+
+    // 0) Public “vk” (you already do this; keep it)
     let rep = vk.vk().transcript_repr().to_bytes_be();
     assign.insert(
         "vk".into(),
         InputValue::Field(F::from_bytes_be(&rep).unwrap()),
     );
-    //assign.insert("vk.1".into(), InputValue::Field(f_from_dec("2")));
-    assign.insert("prev_state".into(), InputValue::Field(f_from_dec("0")));
-    // dummy prev proof
+
+    // 1) is_genesis (as you already set)
+    assign.insert("is_genesis".into(), InputValue::Bool(true));
+
+    // 2) prev_state (private); we’ll take 0 like you had
+    let prev_state_f = F::ZERO;
+    assign.insert("prev_state".into(), InputValue::Field(prev_state_f));
+
+    // 3) Build *the* trivial accumulator and encode it as PI (length = 62)
+    let mut fixed_bases = BTreeMap::new();
+    fixed_bases.insert(String::from("com_instance"), C::identity());
+    fixed_bases.extend(verifier::fixed_bases::<S>("self_vk", vk.vk()));
+
+    // The names matter only to the encoding of the fixed MSM side
+    let fixed_base_names: Vec<String> = fixed_bases.keys().cloned().collect();
+
+    // This is exactly the one used in the IVC example
+    let trivial_acc = Accumulator::<S>::new(
+        // variable-bases MSM (size 1, scalar = 1, base = identity)
+        Msm::new(&[C::default()], &[F::ONE], &BTreeMap::new()),
+        // fixed-bases MSM; all fixed bases present with scalar 0, plus com_instance
+        Msm::new(
+            &[C::default()],
+            &[F::ONE],
+            &fixed_base_names
+                .iter()
+                .map(|name| (name.clone(), F::ZERO))
+                .collect(),
+        ),
+    );
+
+    // Encode to the 62-field PI vector the verifier gadget expects
+    let prev_acc_pi: Vec<F> = AssignedAccumulator::as_public_input(&trivial_acc);
+
+    // 4) Fill private input prev_acc.* with the *correct* encoding
+    for (i, v) in prev_acc_pi.iter().enumerate() {
+        println!("prev_acc[{}] = {}", i, v);
+        assign.insert(format!("prev_acc.{}", i), InputValue::Field(*v));
+    }
+
+    // 5) Compute next_state off-circuit with Poseidon(prev_state)
+    let next_state_f: F = PoseidonChip::<F>::hash(&[prev_state_f]);
+    assign.insert("return.next_state".into(), InputValue::Field(next_state_f));
+
+    // 6) Compute next_acc off-circuit.
+    //     With is_genesis = true, the circuit scales `proof_acc` by 0 and accumulates,
+    //     so next_acc == prev_acc (after collapse). We can just reuse the same encoding.
+    let next_acc_pi: Vec<F> = prev_acc_pi.clone();
+    for (i, v) in next_acc_pi.iter().enumerate() {
+        println!("next_acc[{}] = {}", i, v);
+        assign.insert(format!("return.next_acc.{}", i), InputValue::Field(*v));
+    }
+
+    // 7) Dummy proof bytes are fine for genesis—leave yours as is:
     for i in 0..6240 {
         assign.insert(format!("prev_proof.{}", i), InputValue::Byte(0));
     }
