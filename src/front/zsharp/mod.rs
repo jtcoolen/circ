@@ -2,7 +2,7 @@
 
 mod interp;
 mod parser;
-mod term;
+pub mod term;
 pub mod zvisit;
 
 use super::{FrontEnd, Mode};
@@ -867,11 +867,17 @@ impl<'ast> ZGen<'ast> {
                         let arg_sorts: Vec<Sort> = arg_terms.iter().map(|t| check(t)).collect();
 
                         // 2) Decide return Ty/Sort: prefer the expected type if we have it, else default to Field.
-                        let (ret_ty, ret_sort) = if let Some(ty) = exp_ty.clone() {
+                        let (mut ret_ty, mut ret_sort) = if let Some(ty) = exp_ty.clone() {
                             (ty.clone(), self.ty_to_sort(&ty))
                         } else {
                             (Ty::Field, Sort::Field(cfg().field().clone()))
                         };
+
+                        /*if f_name == "midnight_ivc" {
+                            println!("hey@!!!!");
+                            ret_ty = Ty::Array(93, Box::new(Ty::Field)); // ACC_SIZE
+                            ret_sort = self.ty_to_sort(&ret_ty);
+                        }*/
 
                         // 3) Build the call op.  We keep only the function name user typed;
                         //    you can include the path in `name` if you want (e.g., format!("{}::{}", f_path.display(), f_name)).
@@ -910,6 +916,7 @@ impl<'ast> ZGen<'ast> {
                     arg_sorts,
                     ret_sort: ret_sort.clone(),
                 };
+                println!("{} ret_sort {:?}", f_name, ret_sort);
 
                 // 4) Build the term and wrap it into a T with the matching Ty
                 let t = term(Op::UndefinedFnCall(Box::new(call)), arg_terms);

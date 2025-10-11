@@ -59,13 +59,13 @@
 //! update operators to those tuples, we represent the rewritten tuple trees using an immutable,
 //! fast vector type, instead of standard terms. This allows for log-time updates.
 
+use crate::ir::opt::int_lit;
 use crate::ir::term::{
     bv_lit, check, const_, term, Array, ArrayOp, Computation, Node, Op, PostOrderIter, Sort, Term,
     TermMap, Value, AND,
 };
-use std::collections::BTreeMap;
-
 use itertools::zip_eq;
+use std::collections::BTreeMap;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum TupleTree {
@@ -268,12 +268,94 @@ pub fn eliminate_tuples(cs: &mut Computation) {
                 debug_assert!(cs.is_empty());
                 t.bimap(|a, b| term![Op::Ite; c.clone(), a, b], &f)
             }
+            /*Op::Eq => {
+                let b = cs.pop().unwrap();
+                let a = cs.pop().unwrap();
+                debug_assert!(cs.is_empty());
+                let af: Vec<_> = a.flatten().collect();
+                let bf: Vec<_> = b.flatten().collect();
+
+                assert!(
+                    af.len() == bf.len(),
+                    "tuple-elim Eq shape mismatch: lhs sort={} ({} elts) vs rhs sort={} ({} elts)",
+                    check(&t.cs()[0]),
+                    af.len(),
+                    check(&t.cs()[1]),
+                    bf.len()
+                );
+                let eqs = zip_eq(a.flatten(), b.flatten()).map(|(a, b)| term![Op::Eq; a, b]);
+                TupleTree::NonTuple(term(AND, eqs.collect()))
+            }*/
             Op::Eq => {
                 let b = cs.pop().unwrap();
                 let a = cs.pop().unwrap();
                 debug_assert!(cs.is_empty());
-                let eqs = zip_eq(a.flatten(), b.flatten()).map(|(a, b)| term![Op::Eq; a, b]);
-                TupleTree::NonTuple(term(AND, eqs.collect()))
+
+                let af: Vec<_> = a.flatten().collect();
+                let bf: Vec<_> = b.flatten().collect();
+
+                if af.len() == bf.len() {
+                    // same shape → normal elementwise Eq
+                    let eqs = af
+                        .into_iter()
+                        .zip(bf)
+                        .map(|(x, y)| term![Op::Eq; x, y])
+                        .collect();
+                    TupleTree::NonTuple(term(AND, eqs))
+                } else {
+                    // array ↔ tuple special-case: compare element-wise via Select(array, i)
+                    use crate::ir::term::{check, Sort};
+                    let lhs_sort = check(&t.cs()[0]);
+                    let rhs_sort = check(&t.cs()[1]);
+
+                    // build Select(arr, i) terms with Int index
+                    let select_elems = |arr: Term, len: usize| -> Vec<Term> {
+                        (0..len)
+                            .map(|i| term![Op::Select; arr.clone(), int_lit(rug::Integer::from(i))])
+                            .collect()
+                    };
+
+                    match (&a, &b, &lhs_sort, &rhs_sort) {
+                        // array == tuple
+                        (
+                            TupleTree::NonTuple(arr),
+                            TupleTree::Tuple(_),
+                            Sort::Array(_),
+                            Sort::Tuple(_),
+                        ) => {
+                            let rhs = b.flatten().collect::<Vec<_>>();
+                            let lhs = select_elems(arr.clone(), rhs.len());
+                            let eqs = lhs
+                                .into_iter()
+                                .zip(rhs)
+                                .map(|(x, y)| term![Op::Eq; x, y])
+                                .collect();
+                            TupleTree::NonTuple(term(AND, eqs))
+                        }
+                        // tuple == array
+                        (
+                            TupleTree::Tuple(_),
+                            TupleTree::NonTuple(arr),
+                            Sort::Tuple(_),
+                            Sort::Array(_),
+                        ) => {
+                            let lhs = a.flatten().collect::<Vec<_>>();
+                            let rhs = select_elems(arr.clone(), lhs.len());
+                            let eqs = lhs
+                                .into_iter()
+                                .zip(rhs)
+                                .map(|(x, y)| term![Op::Eq; x, y])
+                                .collect();
+                            TupleTree::NonTuple(term(AND, eqs))
+                        }
+                        _ => {
+                            panic!(
+                    "tuple-elim Eq shape mismatch: lhs sort={} ({} elts) vs rhs sort={} ({} elts)",
+                    lhs_sort, af.len(), rhs_sort, bf.len()
+                );
+                        }
+                    }
+                }
             }
             Op::CStore => {
                 let c = cs.pop().unwrap().unwrap_non_tuple();

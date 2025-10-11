@@ -5,8 +5,10 @@
 use crate::cfg::CircCfg;
 use crate::ir::term::*;
 use crate::target::plonkish::VarType;
+use bellman::groth16::VerifyingKey;
 use im::HashSet;
 use itertools::Itertools;
+use midnight_circuits::compact_std_lib::MidnightVK;
 use midnight_circuits::types::AssignedField;
 use midnight_circuits::verifier::Accumulator;
 use midnight_circuits::verifier::AssignedAccumulator;
@@ -53,6 +55,14 @@ use std::convert::TryInto;
 
 // copied from midnight, make it public upstream?
 pub(crate) const LOG2_BASE: u32 = 96;
+
+/// Read a usize from an *Int* constant.
+fn as_usize_int_const(t: &Term) -> usize {
+    match t.op() {
+        Op::Const(v) => v.as_int().to_i64().expect("index out of range") as usize,
+        _ => panic!("array index must be an Int const, got {}", t),
+    }
+}
 
 pub fn modulus<F: PrimeField>() -> BigUint {
     BigUint::from_str_radix(&F::MODULUS[2..], 16).unwrap()
@@ -249,10 +259,14 @@ struct ToMidnight<'a, 'b, L: Layouter<F>> {
     cfg: &'a CircCfg,
     used_vars: HashSet<String>,
 
+    building_ivc: HashSet<usize>,
+
     // materialized assignment for variables (provided by Relation::Witness/Instance)
     wmap: &'a HashMap<String, Value<InputValue>>, // witness (private)
     imap: &'a HashMap<String, Value<InputValue>>, // instance/public
     pub_order: &'a [String],                      // ordered public names
+    prev_acc: Accumulator<BlstrsEmulation>,
+    vk: Option<MidnightVK>,
 }
 
 impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
@@ -264,6 +278,8 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         wmap: &'a HashMap<String, Value<InputValue>>,
         imap: &'a HashMap<String, Value<InputValue>>,
         pub_order: &'a [String],
+        prev_acc: Accumulator<BlstrsEmulation>,
+        vk: Option<MidnightVK>,
     ) -> Self {
         Self {
             std,
@@ -273,10 +289,102 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
             visited: Default::default(),
             cfg,
             used_vars,
+            building_ivc: HashSet::new(),
             wmap,
             imap,
             pub_order,
+            prev_acc,
+            vk,
         }
+    }
+
+    /*/// If `arr: Array(Field,N)`, materialize it once in cache as `AssignedTerm::Tuple([Field; N])`.
+    fn materialize_field_array_in_cache(&mut self, arr: &Term) -> Result<(), Error> {
+        // Already done?
+        if matches!(self.cache.get(arr), Some(AssignedTerm::Tuple(_))) {
+            return Ok(());
+        }
+
+        // If this array is the result of midnight_ivc(...), materialize it directly
+        if let Op::UndefinedFnCall(call) = arr.op() {
+            if call.name == "midnight_ivc" {
+                // This will fill self.cache.insert(arr.clone(), AssignedTerm::Tuple(...))
+                self.embed_ivc(arr.clone())?;
+                debug_assert!(matches!(self.cache.get(arr), Some(AssignedTerm::Tuple(_))));
+                return Ok(());
+            }
+        }
+
+        // Regular array-of-field materialization
+        let Sort::Array(a) = check(arr) else {
+            panic!("expected Array(..), got {}", check(arr));
+        };
+        assert!(matches!(a.val, Sort::Field(_)), "only Field[] supported");
+
+        let mut elts = Vec::with_capacity(a.size);
+
+        if arr.cs().len() == a.size {
+            // Elements are present as children: just fetch as fields
+            for i in 0..a.size {
+                elts.push(AssignedTerm::Field(self.get_field(&arr.cs()[i])?.clone()));
+            }
+        } else {
+            // IMPORTANT: do NOT call get_field on Select(arr, i) here, it would recurse.
+            // Instead, delegate element access to embed_pf(Select) via a single call later.
+            // Easiest: create the selects, embed them to fields *without* rematerializing `arr`.
+            for i in 0..a.size {
+                let idx = int_lit(rug::Integer::from(i)); // Int const
+                let sel = term![Op::Select; arr.clone(), idx];
+                // `embed_pf` for Select WILL NOT re-enter materialize if `arr` is not midnight_ivc
+                elts.push(AssignedTerm::Field(self.get_field(&sel)?.clone()));
+            }
+        }
+
+        self.cache.insert(arr.clone(), AssignedTerm::Tuple(elts));
+        Ok(())
+    }*/
+
+    fn materialize_field_array_in_cache(&mut self, arr: &Term) -> Result<(), Error> {
+        if matches!(self.cache.get(arr), Some(AssignedTerm::Tuple(_))) {
+            return Ok(());
+        }
+
+        // Special-case: result of midnight_ivc is an array-of-fields; materialize once.
+        if let Op::UndefinedFnCall(call) = arr.op() {
+            if call.name == "midnight_ivc" {
+                if self.building_ivc.contains(&(arr.id().0 as usize)) {
+                    return Ok(());
+                }
+                if !self.cache.contains_key(arr) {
+                    self.embed_ivc(arr.clone())?;
+                }
+                // After embed_ivc, cache MUST contain a Tuple-of-fields for `arr`.
+                debug_assert!(matches!(self.cache.get(arr), Some(AssignedTerm::Tuple(_))));
+                return Ok(());
+            }
+        }
+
+        // Regular array-of-field path
+        let Sort::Array(a) = check(arr) else {
+            panic!("expected Array(..), got {}", check(arr));
+        };
+        assert!(matches!(a.val, Sort::Field(_)), "only Field[] supported");
+
+        let mut elts = Vec::with_capacity(a.size);
+        if arr.cs().len() == a.size {
+            for i in 0..a.size {
+                elts.push(AssignedTerm::Field(self.get_field(&arr.cs()[i])?.clone()));
+            }
+        } else {
+            for i in 0..a.size {
+                let idx = int_lit(rug::Integer::from(i));
+                let sel = term![Op::Select; arr.clone(), idx];
+                elts.push(AssignedTerm::Field(self.get_field(&sel)?.clone()));
+            }
+        }
+
+        self.cache.insert(arr.clone(), AssignedTerm::Tuple(elts));
+        Ok(())
     }
 
     /// Flatten `terms` using their `sorts` into field wires.
@@ -314,7 +422,11 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
     }
 
     /// Flatten any container of Fields (Field | Tuple-of-Field | Array-of-Field).
-    fn flatten_fields_any(&mut self, root: &Term) -> Result<Vec<AssignedNative<F>>, Error> {
+    fn flatten_fields_any(
+        &mut self,
+        root: &Term,
+        id: Option<usize>,
+    ) -> Result<Vec<AssignedNative<F>>, Error> {
         let mut out = Vec::<AssignedNative<F>>::new();
         let mut stack: Vec<Term> = vec![root.clone()];
         while let Some(node) = stack.pop() {
@@ -334,14 +446,37 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                         stack.push(ch.clone());
                     }
                 }
-                Sort::Array(_arr) => {
-                    //if !matches!(arr.key, Sort::Field(_)) {
-                    //    panic!("array element must be Field, got {}", arr.key);
-                    //}
-                    for ch in node.cs().iter().rev() {
-                        stack.push(ch.clone());
+                /*Sort::Array(arr) if matches!(arr.val, Sort::Field(_)) => {
+                    if let Op::UndefinedFnCall(call) = node.op() {
+                        if call.name == "midnight_ivc" {
+                            let id_ = node.id().0;
+                            println!("id = {}", id_);
+                            if self.building_ivc.contains(&(node.id().0 as usize)) || id.is_some() {
+
+                                // Defer: someone else is building it; when they finish,
+                                // callers will re-run and see the cached tuple.
+                                continue;
+                            }
+                            //self.embed_ivc(node.clone())?;
+                            self.materialize_field_array_in_cache(&node)?;
+                        } else {
+                            self.materialize_field_array_in_cache(&node)?;
+                        }
+                    } else {
+                        self.materialize_field_array_in_cache(&node)?;
                     }
-                }
+
+                    if let Some(AssignedTerm::Tuple(elts)) = self.cache.get(&node) {
+                        // push reversed so pop preserves order
+                        for e in elts.iter().rev() {
+                            let AssignedTerm::Field(f) = e else {
+                                panic!("non-field in field[]")
+                            };
+                            out.push(f.clone());
+                        }
+                        continue;
+                    }
+                }*/
                 Sort::Bool => {
                     // Coerce Bool -> Field(0/1)
                     let b = self.get_bit(&node)?.clone();
@@ -663,11 +798,21 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
     /// Materialize the tuple/array-of-fields returned by `midnight_ivc(...)`
     /// and cache it as `AssignedTerm::Tuple(AssignedTerm::Field(..), ...)` on `c`.
     fn embed_ivc(&mut self, c: Term) -> Result<(), Error> {
-        if self.cache.contains_key(&c) {
+        if self.building_ivc.insert(c.id().0 as usize).is_some() {
+            // already in progress somewhere up the call stack
             return Ok(());
         }
 
-        // Return type must be tuple/array of fields
+        if self.cache.contains_key(&c) {
+            return Ok(());
+        }
+        let id = c.id().0 as usize;
+
+        // Also mark as visited right now so generic embed() won’t try to re-embed it
+        self.visited.borrow_mut().insert(c.clone());
+
+        println!("embed_ivc: building id={}", c.id()); // real work
+                                                       // Return type must be tuple/array of fields
         match check(&c) {
             Sort::Array(arr) => {
                 assert!(
@@ -696,7 +841,11 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         let prev_state = self.get_field(&args[2])?.clone();
 
         // 3) prev_acc : field[ACC_SIZE]
-        let prev_acc_fields: Vec<AssignedNative<F>> = self.flatten_fields_any(&args[3])?;
+        let prev_acc_fields: Vec<AssignedNative<F>> = self.flatten_fields_any(&args[3], None)?;
+
+        for e in &prev_acc_fields {
+            println!("e  {:?}", e.value());
+        }
         assert!(
             !prev_acc_fields.is_empty(),
             "midnight_ivc: prev_acc must be non-empty"
@@ -705,6 +854,8 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         // 4) prev_proof : u8[PROOF_SIZE]
         let proof_bytes_v: Vec<AssignedByte<F>> = self.collect_bytes(&args[4])?;
         let proof_bytes_val: Value<Vec<u8>> = proof_bytes_v.iter().map(|b| b.value()).collect();
+
+        println!("proof bytes {:?}", proof_bytes_val);
 
         // ---- Build a local verifier context (same as before) -----------------
         use midnight_circuits::verifier::AssignedVk;
@@ -718,16 +869,33 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         let (cs_no_selectors, _fixed_cols) = raw_cs
             .clone()
             .directly_convert_selectors_to_fixed(vec![vec![false]; raw_cs.num_selectors()]);
+        let cs_no_selectors = if let Some(vk) = &self.vk {
+            vk.vk().cs()
+        } else {
+            &cs_no_selectors
+        };
 
         let domain = EvaluationDomain::new(cs_no_selectors.degree() as u32, 19);
 
         let self_vk_name = "self_vk";
 
-        let assigned_vk = AssignedVk {
-            vk_name: self_vk_name.to_string(),
-            domain: domain.clone(),
-            cs: cs_no_selectors,
-            transcript_repr: vk_field,
+        let assigned_vk = if let Some(vk) = &self.vk {
+            let vk_repr = self
+                .std
+                .assign(self.lay, Value::known(vk.vk().transcript_repr()))?;
+            AssignedVk {
+                vk_name: self_vk_name.to_string(),
+                domain: domain.clone(),
+                cs: cs_no_selectors.clone(),
+                transcript_repr: vk_repr,
+            }
+        } else {
+            AssignedVk {
+                vk_name: self_vk_name.to_string(),
+                domain: domain.clone(),
+                cs: cs_no_selectors.clone(),
+                transcript_repr: vk_field,
+            }
         };
 
         // Identity point for committed-instance binding
@@ -771,25 +939,41 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         //   &assigned_vk.cs,
         //   Value::known(prev_acc_pi_enc),
         //)?;
+        // let prev_acc_vec_val: Value<Vec<F>> =
+        //    prev_acc_fields.iter().map(|a| a.value().copied()).collect();
+
+        // 2) Turn that into a host witness Accumulator (batch = 1).
+        //let prev_acc_witness: Value<Accumulator<BlstrsEmulation>> = prev_acc_vec_val
+        //    .map(|fs| AssignedAccumulator::<BlstrsEmulation>::from_public_input(fs, 1));
+        use midnight_circuits::verifier;
+        let cs = cs_no_selectors.clone();
+        let mut fixed_base_names = vec![String::from("com_instance")];
+        fixed_base_names.extend(verifier::fixed_base_names::<BlstrsEmulation>(
+            self_vk_name,
+            cs.num_fixed_columns() + cs.num_selectors(),
+            cs.permutation().columns.len(),
+        ));
+        println!(
+            "cs fixed cols {}, num selectors {}, perm cols len {}",
+            cs.num_fixed_columns(),
+            cs.num_selectors(),
+            cs.permutation().columns.len()
+        );
+        println!("ivc fixed bases len = {}", fixed_base_names.len());
+
+
+        let prev_acc = if let Some(vk) = &self.vk {
+            Value::known(self.prev_acc.clone())
+        } else {
+            Value::unknown()
+        };
+
         let mut prev_acc = self.std.verifier_assign_accumulator_from_witness(
             self.lay,
             self_vk_name,
-            &assigned_vk.cs,  // <-- processed, selector-free CS
-            Value::unknown(), // <-- IMPORTANT: do NOT try to build it from concrete F's
+            &assigned_vk.cs,                     // <-- processed, selector-free CS
+            prev_acc, // <-- IMPORTANT: do NOT try to build it from concrete F's
         )?;
-
-        // Enforce that its public-input encoding equals the provided field array.
-        let prev_acc_pi_as_fields: Vec<AssignedNative<F>> =
-            self.std.verifier().as_public_input(self.lay, &prev_acc)?;
-        assert!(
-            prev_acc_pi_as_fields.len() == prev_acc_fields.len(),
-            "midnight_ivc: accumulator PI length mismatch ({} vs {})",
-            prev_acc_pi_as_fields.len(),
-            prev_acc_fields.len()
-        );
-        for (x, y) in prev_acc_pi_as_fields.iter().zip(prev_acc_fields.iter()) {
-            self.std.assert_equal(self.lay, x, y)?; // ties witness struct to your field vector
-        }
 
         // Accumulate and collapse to next_acc
         let mut next_acc = self.std.accumulate(self.lay, &[proof_acc, prev_acc])?;
@@ -907,50 +1091,46 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                     },
                 );
             }
+            Sort::Array(a) => {
+                // Only support Field[] here (extend as needed)
+                if !matches!(a.val, Sort::Field(_)) {
+                    panic!(
+                        "embed_var: only Array(Field, _) supported for '{}', got {}",
+                        name, v.sort
+                    );
+                }
+
+                // Build element-by-element from host inputs: "<name>.<idx>"
+                let mut elts: Vec<AssignedTerm> = Vec::with_capacity(a.size);
+                for i in 0..a.size {
+                    let sub = format!("{}.{}", name, i);
+
+                    // Pull from witness map first, else instance map, else default 0
+                    let vv = self
+                        .wmap
+                        .get(&sub)
+                        .or_else(|| self.imap.get(&sub))
+                        .cloned()
+                        .unwrap_or(Value::known(InputValue::Field(self.f_zero())));
+
+                    // Convert InputValue -> F and assign
+                    let fv: Value<F> = vv.map(|iv| iv.as_field_or_default());
+                    let x = self.std.assign(self.lay, fv)?;
+                    if is_public {
+                        self.std.constrain_as_public_input(self.lay, &x)?;
+                    }
+
+                    elts.push(AssignedTerm::Field(x));
+                }
+
+                // Cache the whole array as a tuple of fields so later code can flatten it
+                self.cache.insert(var.clone(), AssignedTerm::Tuple(elts));
+            }
             _ => panic!("Unsupported var sort {}", v.sort),
         }
         Ok(())
     }
 
-    /*fn embed(&mut self, t: Term) -> Result<(), Error> {
-        let visited_rc = self.visited.clone();
-        for c in extras::PostOrderSkipIter::new(t, &move |s: &Term| visited_rc.borrow().contains(s))
-        {
-            if self.visited.borrow().contains(&c) {
-                continue;
-            }
-            match check(&c) {
-                Sort::Bool => {
-                    self.embed_bool(c.clone())?;
-                }
-                Sort::Field(_) => {
-                    self.embed_pf(c.clone())?;
-                }
-                Sort::BitVector(_) => {
-                    self.embed_bv(c.clone())?;
-                }
-                Sort::Tuple(_) | Sort::Array(_) => {
-                    for ch in c.cs() {
-                        self.embed(ch.clone())?;
-                    }
-                    //panic!("embed tup oer arr");
-                    // NEW: if this is a tuple/array-returning call, we may need to
-                    // materialize it (e.g., midnight_ivc). Otherwise, recurse on args.
-                    if let Op::UndefinedFnCall(call) = c.op() {
-                        if call.name.as_str().eq("midnight_ivc") {
-                            self.embed_ivc(c.clone())?;
-                            //self.visited.borrow_mut().insert(c);
-                            continue;
-                        }
-                    }
-
-                }
-                s => panic!("embed unimplemented for {:?}", s),
-            }
-            self.visited.borrow_mut().insert(c);
-        }
-        Ok(())
-    }*/
     fn embed(&mut self, t: Term) -> Result<(), Error> {
         let visited_rc = self.visited.clone();
         for c in extras::PostOrderSkipIter::new(t, &move |s: &Term| visited_rc.borrow().contains(s))
@@ -984,6 +1164,7 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                         self.embed(ch.clone())?;
                     }
                 }
+                Sort::Int => {}
                 s => panic!("embed unimplemented for {:?}", s),
             }
             self.visited.borrow_mut().insert(c);
@@ -1040,18 +1221,6 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                         Sort::Tuple(sorts) => {
                             let a = &c.cs()[0];
                             let b = &c.cs()[1];
-
-                            // NEW: if either side is midnight_ivc(...), materialize it so projections work.
-                            if let Op::UndefinedFnCall(call) = a.op() {
-                                if call.name == "midnight_ivc" {
-                                    self.embed_ivc(a.clone())?;
-                                }
-                            }
-                            if let Op::UndefinedFnCall(call) = b.op() {
-                                if call.name == "midnight_ivc" {
-                                    self.embed_ivc(b.clone())?;
-                                }
-                            }
 
                             let mut bits = Vec::with_capacity(sorts.len());
                             for i in 0..sorts.len() {
@@ -1118,35 +1287,6 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         if !self.cache.contains_key(&c) {
             let w = match c.op() {
                 Op::Var(_) => panic!("call embed_var for vars"),
-                // NEW: handle tuple/array projection; if the parent is midnight_ivc, materialize it.
-                Op::Field(i) => {
-                    let parent = &c.cs()[0];
-                    if !self.cache.contains_key(parent) {
-                        if let Op::UndefinedFnCall(call) = parent.op() {
-                            if call.name == "midnight_ivc" {
-                                self.embed_ivc(parent.clone())?;
-                            } else {
-                                self.embed(parent.clone())?;
-                            }
-                        } else {
-                            self.embed(parent.clone())?;
-                        }
-                    }
-                    match self.cache.get(parent) {
-                        Some(AssignedTerm::Tuple(elems)) => {
-                            let idx = *i;
-                            let AssignedTerm::Field(f) = elems
-                                .get(idx)
-                                .unwrap_or_else(|| panic!("tuple index {idx} out of bounds"))
-                                .clone()
-                            else {
-                                panic!("Op::Field projected a non-field element");
-                            };
-                            AssignedTerm::Field(f)
-                        }
-                        other => panic!("Op::Field on non-tuple producer"),
-                    }
-                }
 
                 Op::Const(v) => {
                     let fv = v.as_pf().as_ty_ref(self.cfg.field());
@@ -1215,6 +1355,33 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                     let inv = self.std.inv(self.lay, &x)?;
                     AssignedTerm::Field(self.mul(&y, &inv)?)
                 }
+                Op::Select => {
+                    let arr = &c.cs()[0];
+                    let idx = as_usize_int_const(&c.cs()[1]); // Int const
+
+                    if let Op::UndefinedFnCall(call) = arr.op() {
+                        // normal path
+                        //self.materialize_field_array_in_cache(arr)?;
+                        let AssignedTerm::Tuple(elts) = self.cache.get(arr).unwrap().clone() else {
+                            unreachable!()
+                        };
+                        let AssignedTerm::Field(f) = elts[idx].clone() else {
+                            panic!("element not a Field")
+                        };
+                        AssignedTerm::Field(f)
+                    } else {
+                        // normal path
+                        // self.materialize_field_array_in_cache(arr)?;
+                        let AssignedTerm::Tuple(elts) = self.cache.get(arr).unwrap().clone() else {
+                            unreachable!()
+                        };
+                        let AssignedTerm::Field(f) = elts[idx].clone() else {
+                            panic!("element not a Field")
+                        };
+                        AssignedTerm::Field(f)
+                    }
+                }
+
                 Op::UndefinedFnCall(call) => {
                     let arg_terms = c.cs();
 
@@ -1264,11 +1431,11 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
 
                             // 2) Siblings: Field[]
                             let assigned_input_words: Vec<AssignedNative<F>> =
-                                self.flatten_fields_any(&arg_terms[1])?;
+                                self.flatten_fields_any(&arg_terms[1], None)?;
 
                             // 3) Positions: Field[] (each 0/1) -> AssignedBit
                             let pos_fields: Vec<AssignedNative<F>> =
-                                self.flatten_fields_any(&arg_terms[2])?;
+                                self.flatten_fields_any(&arg_terms[2], None)?;
                             if assigned_input_words.len() != pos_fields.len() {
                                 panic!(
                                     "midnight_hybrid_mt: siblings and positions length mismatch ({} vs {})",
@@ -1744,30 +1911,18 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                 Sort::Array(arr) => {
                     let acs = a.cs();
                     let bcs = b.cs();
-                    assert!(
+                    /*assert!(
                         acs.len() == bcs.len(),
                         "assert_bool Eq on arrays of different lengths: {} vs {}",
                         acs.len(),
                         bcs.len()
-                    );
-
-                    // This seems to catch the ivc node
-                    if let Op::UndefinedFnCall(call) = a.op() {
-                        if call.name == "midnight_ivc" {
-                            self.embed_ivc(a.clone())?;
-                        }
-                    }
-                    if let Op::UndefinedFnCall(call) = b.op() {
-                        if call.name == "midnight_ivc" {
-                            self.embed_ivc(b.clone())?;
-                        }
-                    }
+                    );*/
 
                     match &arr.val {
                         // Field[] → flatten then field equality
                         Sort::Field(_) => {
-                            let a_fields = self.flatten_fields_any(a)?;
-                            let b_fields = self.flatten_fields_any(b)?;
+                            let a_fields = self.flatten_fields_any(a, None)?;
+                            let b_fields = self.flatten_fields_any(b, None)?;
                             let mut eqs = Vec::with_capacity(a_fields.len());
                             for (x, y) in a_fields.iter().zip(b_fields.iter()) {
                                 eqs.push(self.std.is_equal(self.lay, x, y)?);
@@ -1879,6 +2034,8 @@ pub struct IrRelation<'a> {
     pub public_names: Vec<String>,
     // all input names (order) for witness vector
     pub all_names: Vec<String>,
+    pub prev_acc: Accumulator<BlstrsEmulation>,
+    pub vk: Option<MidnightVK>,
 }
 
 impl<'a> m::Relation for IrRelation<'a> {
@@ -1957,6 +2114,8 @@ impl<'a> m::Relation for IrRelation<'a> {
             &wmap,
             &imap,
             &self.public_names,
+            self.prev_acc.clone(),
+            self.vk.clone(),
         );
 
         // 1) Declare variables
@@ -2001,7 +2160,12 @@ impl<'a> m::Relation for IrRelation<'a> {
 // Builder: produce a Relation for CS
 // -------------------------------------
 
-pub fn to_midnight_relation<'a>(cs: &'a Computation, cfg: &'a CircCfg) -> IrRelation<'a> {
+pub fn to_midnight_relation<'a>(
+    cs: &'a Computation,
+    cfg: &'a CircCfg,
+    prev_acc: Accumulator<BlstrsEmulation>,
+    vk: Option<MidnightVK>,
+) -> IrRelation<'a> {
     let public_names: Vec<String> = cs
         .metadata
         .interactive_vars()
@@ -2020,5 +2184,7 @@ pub fn to_midnight_relation<'a>(cs: &'a Computation, cfg: &'a CircCfg) -> IrRela
         cfg,
         public_names,
         all_names,
+        prev_acc,
+        vk,
     }
 }

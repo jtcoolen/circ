@@ -2644,7 +2644,7 @@ fn main() {
             Opt::Tuple,
             Opt::LinearScan,
             // The linear scan pass produces more tuples, that must be eliminated
-            //Opt::Tuple,
+            Opt::Tuple,
             Opt::Flatten,
             Opt::ConstantFold(Box::new([])),
             Opt::Inline,
@@ -2935,8 +2935,15 @@ fn main() {
                                                                   }*/
 
     // 1) Build the relation wrapper
-    let relation: circ::target::halo2::trans::IrRelation<'_> =
-        to_midnight_relation(&cs.get("main"), cfg());
+    let relation: circ::target::halo2::trans::IrRelation<'_> = to_midnight_relation(
+        &cs.get("main"),
+        cfg(),
+        Accumulator::new(
+            Msm::new(&[C::default()], &[F::ONE], &BTreeMap::new()),
+            Msm::new(&[C::default()], &[F::ONE], &BTreeMap::new()),
+        ),
+        None,
+    );
 
     //ark_std::println!("circuit size = {}", relation.);
     // 2) SRS / VK / PK
@@ -2945,10 +2952,9 @@ fn main() {
 
     let mut srs: ParamsKZG<Bls12> = filecoin_srs(k);
     let vk = m::setup_vk(&srs, &relation);
-    let pk = m::setup_pk(&relation, &vk);
 
-    // ==================
     use midnight_circuits::halo2curves::group::Group;
+    use midnight_circuits::verifier::fixed_bases;
     use midnight_circuits::{
         hash::poseidon::PoseidonChip,
         types::{AssignedNative, ComposableChip, Instantiable},
@@ -2960,24 +2966,11 @@ fn main() {
     type Fmm = <S as SelfEmulation>::F;
     type C = <S as SelfEmulation>::C;
 
-    // 0) Public “vk” (you already do this; keep it)
-    let rep = vk.vk().transcript_repr().to_bytes_be();
-    assign.insert(
-        "vk".into(),
-        InputValue::Field(F::from_bytes_be(&rep).unwrap()),
-    );
-
-    // 1) is_genesis (as you already set)
-    assign.insert("is_genesis".into(), InputValue::Bool(true));
-
-    // 2) prev_state (private); we’ll take 0 like you had
-    let prev_state_f = F::ZERO;
-    assign.insert("prev_state".into(), InputValue::Field(prev_state_f));
-
     // 3) Build *the* trivial accumulator and encode it as PI (length = 62)
     let mut fixed_bases = BTreeMap::new();
     fixed_bases.insert(String::from("com_instance"), C::identity());
     fixed_bases.extend(verifier::fixed_bases::<S>("self_vk", vk.vk()));
+    println!("fixed bases len {}", fixed_bases.len());
 
     // The names matter only to the encoding of the fixed MSM side
     let fixed_base_names: Vec<String> = fixed_bases.keys().cloned().collect();
@@ -2996,6 +2989,35 @@ fn main() {
                 .collect(),
         ),
     );
+
+    // 1) Build the relation wrapper
+    let relation: circ::target::halo2::trans::IrRelation<'_> =
+        to_midnight_relation(&cs.get("main"), cfg(), trivial_acc.clone(), Some(vk));
+
+    //ark_std::println!("circuit size = {}", relation.);
+    // 2) SRS / VK / PK
+    // TODO compute k from circuit
+    let k = 21; // pick an adequate k; or compute with relation.midnight min_k (see m::k_from_circuit)
+
+    let mut srs: ParamsKZG<Bls12> = filecoin_srs(k);
+    let vk = m::setup_vk(&srs, &relation);
+    let pk = m::setup_pk(&relation, &vk);
+
+    // ==================
+
+    // 0) Public “vk” (you already do this; keep it)
+    let rep = vk.vk().transcript_repr().to_bytes_be();
+    assign.insert(
+        "vk".into(),
+        InputValue::Field(F::from_bytes_be(&rep).unwrap()),
+    );
+
+    // 1) is_genesis (as you already set)
+    assign.insert("is_genesis".into(), InputValue::Bool(true));
+
+    // 2) prev_state (private); we’ll take 0 like you had
+    let prev_state_f = F::ZERO;
+    assign.insert("prev_state".into(), InputValue::Field(prev_state_f));
 
     // Encode to the 62-field PI vector the verifier gadget expects
     let prev_acc_pi: Vec<F> = AssignedAccumulator::as_public_input(&trivial_acc);

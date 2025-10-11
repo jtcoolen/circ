@@ -1902,7 +1902,7 @@ dependencies = [
 [[package]]
 name = "midnight-aggregator"
 version = "0.1.0"
-source = "git+https://github.com/jtcoolen/midnight-zk#be0c0972d8a5d61871e02c72c18a5bbecdb97a86"
+source = "git+https://github.com/jtcoolen/midnight-zk#b763b883bd611cb4e12fa00b811c65f3679559b1"
 dependencies = [
  "blake2b_simd",
  "ff 0.13.1",
@@ -1918,7 +1918,7 @@ dependencies = [
 [[package]]
 name = "midnight-circuits"
 version = "4.0.0"
-source = "git+https://github.com/jtcoolen/midnight-zk#be0c0972d8a5d61871e02c72c18a5bbecdb97a86"
+source = "git+https://github.com/jtcoolen/midnight-zk#b763b883bd611cb4e12fa00b811c65f3679559b1"
 dependencies = [
  "base64",
  "bincode 2.0.1",
@@ -1941,7 +1941,7 @@ dependencies = [
 [[package]]
 name = "midnight-curves"
 version = "0.1.0"
-source = "git+https://github.com/jtcoolen/midnight-zk#be0c0972d8a5d61871e02c72c18a5bbecdb97a86"
+source = "git+https://github.com/jtcoolen/midnight-zk#b763b883bd611cb4e12fa00b811c65f3679559b1"
 dependencies = [
  "bitvec",
  "blst",
@@ -1960,7 +1960,7 @@ dependencies = [
 [[package]]
 name = "midnight-proofs"
 version = "0.4.0"
-source = "git+https://github.com/jtcoolen/midnight-zk#be0c0972d8a5d61871e02c72c18a5bbecdb97a86"
+source = "git+https://github.com/jtcoolen/midnight-zk#b763b883bd611cb4e12fa00b811c65f3679559b1"
 dependencies = [
  "blake2b_simd",
  "ff 0.13.1",
