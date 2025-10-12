@@ -902,10 +902,13 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         let id_point = self.std.verifier_identity_point(self.lay)?;
 
         // Build PI vector: [vk_pub, prev_state, prev_acc_pub...]
+        // TODO take the PI from the IR
         let mut pi: Vec<AssignedNative<F>> = Vec::new();
         pi.push(assigned_vk.transcript_repr.clone());
-        pi.push(prev_state.clone());
+        // TODO is genesis?
+        pi.push(is_genesis.into());
         pi.extend(prev_acc_fields.clone());
+        pi.push(prev_state.clone());
 
         // ---- Partial verify + accumulate ------------------------------------
         let mut proof_acc = self.std.verifier_prepare_partial_plonk(
