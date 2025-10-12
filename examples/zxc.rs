@@ -2948,11 +2948,18 @@ fn main() {
     //ark_std::println!("circuit size = {}", relation.);
     // 2) SRS / VK / PK
     // TODO compute k from circuit
-    let k = 21; // pick an adequate k; or compute with relation.midnight min_k (see m::k_from_circuit)
+    let k = 19; // pick an adequate k; or compute with relation.midnight min_k (see m::k_from_circuit)
 
+    let now = Instant::now();
     let mut srs: ParamsKZG<Bls12> = filecoin_srs(k);
+    println!("vk");
     let vk = m::setup_vk(&srs, &relation);
 
+    println!("pk");
+    let pk = m::setup_pk(&relation, &vk);
+    println!("pk done");
+
+    println!("setup : {:?}", now.elapsed());
     use midnight_circuits::halo2curves::group::Group;
     use midnight_circuits::verifier::fixed_bases;
     use midnight_circuits::{
@@ -2970,7 +2977,7 @@ fn main() {
     let mut fixed_bases = BTreeMap::new();
     fixed_bases.insert(String::from("com_instance"), C::identity());
     fixed_bases.extend(verifier::fixed_bases::<S>("self_vk", vk.vk()));
-    println!("fixed bases len {}", fixed_bases.len());
+    //println!("fixed bases len {}", fixed_bases.len());
 
     // The names matter only to the encoding of the fixed MSM side
     let fixed_base_names: Vec<String> = fixed_bases.keys().cloned().collect();
@@ -2991,17 +2998,24 @@ fn main() {
     );
 
     // 1) Build the relation wrapper
-    let relation: circ::target::halo2::trans::IrRelation<'_> =
-        to_midnight_relation(&cs.get("main"), cfg(), trivial_acc.clone(), Some(vk));
+    let relation: circ::target::halo2::trans::IrRelation<'_> = to_midnight_relation(
+        &cs.get("main"),
+        cfg(),
+        trivial_acc.clone(),
+        Some(vk.clone()),
+    );
 
     //ark_std::println!("circuit size = {}", relation.);
     // 2) SRS / VK / PK
     // TODO compute k from circuit
-    let k = 21; // pick an adequate k; or compute with relation.midnight min_k (see m::k_from_circuit)
+    let k = 19; // pick an adequate k; or compute with relation.midnight min_k (see m::k_from_circuit)
 
     let mut srs: ParamsKZG<Bls12> = filecoin_srs(k);
+    println!("vk");
     let vk = m::setup_vk(&srs, &relation);
+    println!("pk");
     let pk = m::setup_pk(&relation, &vk);
+    println!("pk done");
 
     // ==================
 
@@ -3024,7 +3038,7 @@ fn main() {
 
     // 4) Fill private input prev_acc.* with the *correct* encoding
     for (i, v) in prev_acc_pi.iter().enumerate() {
-        println!("prev_acc[{}] = {}", i, v);
+        //println!("prev_acc[{}] = {}", i, v);
         assign.insert(format!("prev_acc.{}", i), InputValue::Field(*v));
     }
 

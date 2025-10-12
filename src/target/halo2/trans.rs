@@ -6,7 +6,6 @@ use crate::cfg::CircCfg;
 use crate::ir::term::*;
 use crate::target::plonkish::VarType;
 use bellman::groth16::VerifyingKey;
-use im::HashSet;
 use itertools::Itertools;
 use midnight_circuits::compact_std_lib::MidnightVK;
 use midnight_circuits::types::AssignedField;
@@ -21,6 +20,7 @@ use rug::Assign;
 use rug::Integer;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use ark_ff::Zero;
@@ -356,7 +356,7 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                     return Ok(());
                 }
                 if !self.cache.contains_key(arr) {
-                    self.embed_ivc(arr.clone())?;
+                    //self.embed_ivc(arr.clone())?;
                 }
                 // After embed_ivc, cache MUST contain a Tuple-of-fields for `arr`.
                 debug_assert!(matches!(self.cache.get(arr), Some(AssignedTerm::Tuple(_))));
@@ -798,7 +798,7 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
     /// Materialize the tuple/array-of-fields returned by `midnight_ivc(...)`
     /// and cache it as `AssignedTerm::Tuple(AssignedTerm::Field(..), ...)` on `c`.
     fn embed_ivc(&mut self, c: Term) -> Result<(), Error> {
-        if self.building_ivc.insert(c.id().0 as usize).is_some() {
+        if !self.building_ivc.insert(c.id().0 as usize) {
             // already in progress somewhere up the call stack
             return Ok(());
         }
@@ -811,8 +811,8 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         // Also mark as visited right now so generic embed() won’t try to re-embed it
         self.visited.borrow_mut().insert(c.clone());
 
-        println!("embed_ivc: building id={}", c.id()); // real work
-                                                       // Return type must be tuple/array of fields
+        //println!("embed_ivc: building id={}", c.id()); // real work
+        // Return type must be tuple/array of fields
         match check(&c) {
             Sort::Array(arr) => {
                 assert!(
@@ -844,18 +844,18 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         let prev_acc_fields: Vec<AssignedNative<F>> = self.flatten_fields_any(&args[3], None)?;
 
         for e in &prev_acc_fields {
-            println!("e  {:?}", e.value());
+            //   println!("e  {:?}", e.value());
         }
-        assert!(
+        /*assert!(
             !prev_acc_fields.is_empty(),
             "midnight_ivc: prev_acc must be non-empty"
-        );
+        );*/
 
         // 4) prev_proof : u8[PROOF_SIZE]
         let proof_bytes_v: Vec<AssignedByte<F>> = self.collect_bytes(&args[4])?;
         let proof_bytes_val: Value<Vec<u8>> = proof_bytes_v.iter().map(|b| b.value()).collect();
 
-        println!("proof bytes {:?}", proof_bytes_val);
+        //println!("proof bytes {:?}", proof_bytes_val);
 
         // ---- Build a local verifier context (same as before) -----------------
         use midnight_circuits::verifier::AssignedVk;
@@ -921,11 +921,11 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
             .accumulator_scale_by_bit(self.lay, &is_not_genesis, &mut proof_acc)?;
         self.std.collapse_accumulator(self.lay, &mut proof_acc)?;
 
-        println!(
+        /*println!(
             "prev acc fields (len = {}) {:?}",
             prev_acc_fields.len(),
             prev_acc_fields
-        );
+        );*/
         // Link the provided prev_acc (as witness) to its expected PI encoding
         //let prev_acc_f: Vec<F> = prev_acc_fields
         //    .iter()
@@ -953,14 +953,13 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
             cs.num_fixed_columns() + cs.num_selectors(),
             cs.permutation().columns.len(),
         ));
-        println!(
+        /*println!(
             "cs fixed cols {}, num selectors {}, perm cols len {}",
             cs.num_fixed_columns(),
             cs.num_selectors(),
             cs.permutation().columns.len()
-        );
-        println!("ivc fixed bases len = {}", fixed_base_names.len());
-
+        );*/
+        // println!("ivc fixed bases len = {}", fixed_base_names.len());
 
         let prev_acc = if let Some(vk) = &self.vk {
             Value::known(self.prev_acc.clone())
@@ -971,14 +970,15 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         let mut prev_acc = self.std.verifier_assign_accumulator_from_witness(
             self.lay,
             self_vk_name,
-            &assigned_vk.cs,                     // <-- processed, selector-free CS
-            prev_acc, // <-- IMPORTANT: do NOT try to build it from concrete F's
+            &assigned_vk.cs, // <-- processed, selector-free CS
+            prev_acc,        // <-- IMPORTANT: do NOT try to build it from concrete F's
         )?;
 
         // Accumulate and collapse to next_acc
         let mut next_acc = self.std.accumulate(self.lay, &[proof_acc, prev_acc])?;
         self.std.collapse_accumulator(self.lay, &mut next_acc)?;
 
+        println!("collapse accu for node");
         // Expose as tuple-of-fields
         let next_acc_field_elts = self.std.verifier().as_public_input(self.lay, &next_acc)?;
         let tuple: Vec<AssignedTerm> = next_acc_field_elts
@@ -1143,6 +1143,7 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
             if let Op::UndefinedFnCall(call) = c.op() {
                 if call.name == "midnight_ivc" {
                     self.embed_ivc(c.clone())?;
+                    //self.embed_ivc(c.clone())?;
                     self.visited.borrow_mut().insert(c);
                     continue; // already materialized as a Tuple of fields
                 }
@@ -2142,6 +2143,14 @@ impl<'a> m::Relation for IrRelation<'a> {
     fn used_chips(&self) -> m::ZkStdLibArch {
         let mut arch = m::ZkStdLibArch::default();
         arch.verifier = true;
+        arch.jubjub = false;
+        arch.poseidon = true;
+        arch.sha256 = None; // disable SHA tables completely
+        arch.secp256k1 = false;
+        arch.bls12_381 = false; // keep OFF; the verifier uses the *self* version below
+        arch.base64 = false;
+        arch.automaton = false;
+        //arch.nr_pow2range_cols = 6;     // or 7 (max); bump parallelism
         arch
     }
 
