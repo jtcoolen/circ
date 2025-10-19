@@ -20,6 +20,7 @@ use circ_fields::FullFieldV::FBls12381;
 use ff::derive::bitvec::field;
 use fxhash::FxHashMap;
 use im::HashMap;
+use midnight_circuits::compact_std_lib::MidnightCircuit;
 use midnight_circuits::types::AssignedByte;
 use rsmt2::print;
 use rug::Integer;
@@ -62,6 +63,30 @@ use std::cmp::max;
 use std::collections::HashSet;
 
 use ark_std::log2;
+
+pub fn lex_to_numeric_in_place<T>(elems: &mut [T]) {
+    let n = elems.len();
+
+    // order[pos] = numeric index where the element at `pos` should go.
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&i| i.to_string()); // lexicographic by decimal string
+
+    // Apply the permutation in-place using swaps. After each swap,
+    // swap in `order` as well to keep "order[pos] is the target of the element at pos".
+    for i in 0..n {
+        while order[i] != i {
+            let j = order[i];
+            elems.swap(i, j);
+            order.swap(i, j);
+        }
+    }
+}
+
+/// Convenience wrapper that takes ownership and returns the reordered vector.
+pub fn reorder_lex_to_numeric<T>(mut elems: Vec<T>) -> Vec<T> {
+    lex_to_numeric_in_place(&mut elems);
+    elems
+}
 
 /// A row of selector of width `#selectors`
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2613,9 +2638,9 @@ pub fn build_merkle_assignment_height32() -> HashMap<String, InputValue> {
 use ark_std::collections::BTreeMap;
 
 // How many iterations do you want?
-const ITERS: usize = 3;
+const ITERS: usize = 10;
 // Fixed witness length for prev_proof.* (keep your 6240 here)
-const PROOF_WITNESS_LEN: usize = 6240;
+const PROOF_WITNESS_LEN: usize = 6432;
 
 fn set_prev_proof(assign: &mut BTreeMap<String, InputValue>, bytes: &[u8]) {
     // Truncate or pad to the fixed witness length expected by the circuit.
@@ -2952,46 +2977,16 @@ fn main() {
                                                                   }*/
 
     // 1) Build the relation wrapper
-    let relation: circ::target::halo2::trans::IrRelation<'_> = to_midnight_relation(
-        &cs.get("main"),
-        cfg(),
-        Accumulator::new(
-            Msm::new(&[C::default()], &[F::ONE], &BTreeMap::new()),
-            Msm::new(&[C::default()], &[F::ONE], &BTreeMap::new()),
-        ),
-        None,
-    );
 
-    //ark_std::println!("circuit size = {}", relation.);
-    // 2) SRS / VK / PK
-    // TODO compute k from circuit
-    //#[cfg(feature = "truncated-challenges")]
-    let k = 19; // pick an adequate k; or compute with relation.midnight min_k (see m::k_from_circuit)
-
-    let now = Instant::now();
-    let mut srs: ParamsKZG<Bls12> = filecoin_srs(k);
-    println!("vk");
-    let vk: m::MidnightVK = m::setup_vk(&srs, &relation);
-
-    println!("pk");
-    let pk = m::setup_pk(&relation, &vk);
-    println!("pk done");
-
-    println!("setup : {:?}", now.elapsed());
     use midnight_circuits::compact_std_lib::Relation;
     use midnight_circuits::halo2curves::group::Group;
-    use midnight_circuits::types::AssignedBit;
-    use midnight_circuits::verifier::fixed_bases;
     use midnight_circuits::verifier::AssignedVk;
     use midnight_circuits::{
-        hash::poseidon::PoseidonChip,
-        types::{AssignedNative, ComposableChip, Instantiable},
+        types::Instantiable,
         verifier::{self, Accumulator, AssignedAccumulator, BlstrsEmulation, Msm, SelfEmulation},
     };
     use midnight_proofs::plonk::prepare;
-    use midnight_proofs::poly::commitment::PolynomialCommitmentScheme;
     use midnight_proofs::poly::kzg::KZGCommitmentScheme;
-    use midnight_proofs::poly::EvaluationDomain;
     use midnight_proofs::transcript::CircuitTranscript;
     use midnight_proofs::transcript::Transcript;
     use std::collections::BTreeMap;
@@ -3000,6 +2995,29 @@ fn main() {
     type Fmm = <S as SelfEmulation>::F;
     type C = <S as SelfEmulation>::C;
     type E = <S as SelfEmulation>::Engine;
+
+    let mut relation: circ::target::halo2::trans::IrRelation<'_> =
+        to_midnight_relation(&cs.get("main"), cfg(), None, None);
+
+    use midnight_circuits::hash::poseidon::PoseidonState;
+
+    //ark_std::println!("circuit size = {}", relation.);
+    // 2) SRS / VK / PK
+    // TODO compute k from circuit
+    //#[cfg(feature = "truncated-challenges")]
+    let k = 19; // pick an adequate k; or compute with relation.midnight min_k (see m::k_from_circuit)
+
+    let now = Instant::now();
+    let srs: ParamsKZG<Bls12> = filecoin_srs(k);
+    println!("vk");
+    let vk: m::MidnightVK = m::setup_vk(&srs, &relation);
+    relation.set_vk(vk.clone());
+
+    println!("pk");
+    let pk = m::setup_pk(&relation, &vk);
+    println!("pk done");
+
+    println!("setup : {:?}", now.elapsed());
 
     // 3) Build *the* trivial accumulator and encode it as PI (length = 62)
     let mut fixed_bases = BTreeMap::new();
@@ -3025,124 +3043,70 @@ fn main() {
         ),
     );
 
-    // 1) Build the relation wrapper
-    let relation: circ::target::halo2::trans::IrRelation<'_> = to_midnight_relation(
-        &cs.get("main"),
-        cfg(),
-        trivial_acc.clone(),
-        Some(vk.clone()),
-    );
-    let k = 19; // pick an adequate k; or compute with relation.midnight min_k (see m::k_from_circuit)
-
-    let mut srs: ParamsKZG<Bls12> = filecoin_srs(k);
-    println!("vk");
-    let vk = m::setup_vk(&srs, &relation);
-    println!("pk");
-    let pk = m::setup_pk(&relation, &vk);
-    println!("pk done");
-    let mut fixed_bases = BTreeMap::new();
-    fixed_bases.insert(String::from("com_instance"), C::identity());
-    fixed_bases.extend(verifier::fixed_bases::<S>("self_vk", vk.vk()));
-    //println!("fixed bases len {}", fixed_bases.len());
-
-    // The names matter only to the encoding of the fixed MSM side
-    let fixed_base_names: Vec<String> = fixed_bases.keys().cloned().collect();
+    relation.set_prev_acc(trivial_acc.clone());
 
     // 3) Evolving state across iterations
     let mut prev_state: F = F::ZERO;
-    let mut prev_acc: Accumulator<S> = trivial_acc.clone();
     let mut prev_proof: Vec<u8> = (0..PROOF_WITNESS_LEN).map(|_| 0u8).collect::<Vec<u8>>();
-    let mut instance_prev: Vec<F> = vec![]; // PI vector used in the previous proof
 
     // vk repr as a single field (as your relation expects)
     let vk_field = vk.vk().transcript_repr();
 
-    let mut com_inst_prev_commit: C = C::identity(); // identity at genesis
-                                                     //ark_std::println!("circuit size = {}", relation.);
-                                                     // 2) SRS / VK / PK
-                                                     // TODO compute k from circuit
-                                                     // ========== ITERATIVE LOOP ==========
+    println!(
+        "vk = {}, {:?}",
+        vk_field,
+        AssignedVk::<S>::as_public_input(&vk.vk())
+    );
+
+    let mut prev_acc: Accumulator<S> = trivial_acc.clone();
+    let mut acc: Accumulator<S> = trivial_acc.clone();
+
+    // --- ITERATIVE LOOP --------------------------------------------------------
     for it in 0..ITERS {
         println!("--- iteration {} ---", it);
 
-        // Build the assignment map for this iteration
+        // Build assignment map
         let mut assign: BTreeMap<String, InputValue> = BTreeMap::new();
 
-        // (Public) vk field you already use
         assign.insert("vk".into(), InputValue::Field(vk_field));
 
-        // is_genesis flag
         let is_genesis = it == 0;
         assign.insert("is_genesis".into(), InputValue::Bool(is_genesis));
 
-        // (Private) prev_state
+        // prev_state (private)
         assign.insert("prev_state".into(), InputValue::Field(prev_state));
 
-        // (Private) prev_acc.*  -- use the encoding your gadget expects
+        // prev_acc.* (private) — witness the *current* acc_goal
         let prev_acc_pi: Vec<F> = AssignedAccumulator::as_public_input(&prev_acc);
+        println!("prev acc off circuit {:?}", prev_acc_pi);
+        println!("acc size {}", prev_acc_pi.len());
         for (i, v) in prev_acc_pi.iter().enumerate() {
             assign.insert(format!("prev_acc.{i}"), InputValue::Field(*v));
         }
 
-        // (Private) prev_proof bytes (zeros on genesis, else last proof)
-        set_prev_proof(&mut assign, if is_genesis { &[] } else { &prev_proof });
+        // prev_proof bytes (private) — empty on genesis
+        set_prev_proof(&mut assign, &prev_proof);
 
-        // Compute next_state off-circuit (your choice: Poseidon(prev_state))
-        let next_state: F = PoseidonChip::<F>::hash(&[prev_state]);
+        // next_state (public) — whatever your app transition is
+        //let next_state: F = PoseidonChip::<F>::hash(&[prev_state]);
+        let next_state: F = prev_state + F::ONE + F::ONE;
         assign.insert("return.next_state".into(), InputValue::Field(next_state));
 
-        let mut public_inputs = AssignedVk::<S>::as_public_input(&vk.vk());
-        public_inputs.extend(AssignedBit::<F>::as_public_input(&is_genesis));
-        public_inputs.extend(AssignedAccumulator::as_public_input(&prev_acc));
-        public_inputs.extend(AssignedNative::<F>::as_public_input(&prev_state));
-
-        println!("PI len {}", public_inputs.len());
-        // Compute next_acc off-circuit:
-        //  - on genesis: scale-by-0 inside circuit => next_acc == prev_acc
-        //  - otherwise: proof_acc = prepare(prev_proof, instance_prev); next_acc = collapse(accumulate(proof_acc, prev_acc))
-        let next_acc: Accumulator<S> = if is_genesis {
-            prev_acc.clone()
-        } else {
-            // Prepare the previous proof into an accumulator with the SAME PI vector used to create that proof.
-            let mut transcript = CircuitTranscript::<Blake2b>::init_from_bytes(&prev_proof);
-            let dual_msm = prepare::<F, KZGCommitmentScheme<E>, CircuitTranscript<Blake2b>>(
-                vk.vk(),
-                // committed instances: none in your flow (use identity placeholder)
-                &[&[com_inst_prev_commit]],
-                // raw public inputs: exactly the previous instance vector
-                &[&[&instance_prev]],
-                &mut transcript,
-            )
-            .expect("prepare(prev_proof) failed");
-
-            // Optionally sanity-check the dual_msm with the verifier params
-            assert!(dual_msm.clone().check(&srs.verifier_params()));
-
-            // Convert to our S-accumulator, attach fixed bases, and collapse
-            let mut proof_acc: Accumulator<S> = dual_msm.into();
-            proof_acc.extract_fixed_bases(&fixed_bases);
-            proof_acc.collapse();
-
-            // Accumulate proof_acc with prev_acc and collapse => public next_acc
-            let mut acc = Accumulator::<S>::accumulate(&[proof_acc, prev_acc.clone()]);
-            acc.collapse();
-            acc
-        };
-
-        // Fill public output next_acc.* to match circuit's expected PI encoding
-        let next_acc_pi: Vec<F> = AssignedAccumulator::as_public_input(&next_acc);
+        // --- IMPORTANT CHANGE: do NOT precompute next_acc from prev_proof here ---
+        // Instead, the public "next_acc" for THIS iteration is exactly acc_goal.
+        let next_acc_pi: Vec<F> = AssignedAccumulator::as_public_input(&acc);
         for (i, v) in next_acc_pi.iter().enumerate() {
             assign.insert(format!("return.next_acc.{i}"), InputValue::Field(*v));
         }
 
-        // Build the instance / witness vectors in the order your relation expects
-        let instance: Vec<InputValue> = relation
-            .public_names
+        // Build instance/witness in the order your relation expects
+        let public_names = relation.public_names.clone();
+        let instance: Vec<InputValue> = public_names
             .iter()
             .map(|n| {
                 assign
                     .get(n)
-                    .unwrap_or_else(|| panic!("missing public input '{n}'"))
+                    .unwrap_or_else(|| panic!("missing PI '{}'", n))
                     .clone()
             })
             .collect();
@@ -3153,14 +3117,15 @@ fn main() {
             .map(|n| {
                 assign
                     .get(n)
-                    .unwrap_or_else(|| panic!("missing input '{n}'"))
+                    .unwrap_or_else(|| panic!("missing input '{}'", n))
                     .clone()
             })
             .collect();
 
-        // Prove
+        // --- PROVE FIRST (like IVC) --------------------------------------------
+
         let now = Instant::now();
-        let proof = m::prove::<_, Blake2b>(
+        let proof = m::prove::<IrRelation, PoseidonState<Fmm>>(
             &srs,
             &pk,
             &relation,
@@ -3169,46 +3134,80 @@ fn main() {
             rand::rngs::OsRng,
         )
         .expect("prove failed");
+
         println!("prove (iter {it}) took {:?}", now.elapsed());
+        println!("proof len {}", proof.len());
+        //println!("proof is {:?}", proof);
 
-        let ci_fields: Vec<F> =
-            circ::target::halo2::trans::IrRelation::format_committed_instances(&witness);
-        com_inst_prev_commit = if ci_fields.is_empty() {
-            C::identity()
-        } else {
-            let domain = vk.vk().get_domain();
+        println!(
+            "PIs {:?}",
+            relation
+                .public_names
+                .iter()
+                .map(|n| (n, assign.get(n).unwrap().clone()))
+                .collect::<Vec<_>>()
+        );
 
-            let mut a = domain.empty_coeff();
+        // Format the EXACT PI vector used for this proof.
+        // Use it again for `prepare` on THIS proof we just made.
+        let instance_f: Vec<F> = circ::target::halo2::trans::IrRelation::format_instance(&instance);
 
-            for (a, f) in a.iter_mut().zip(ci_fields) {
-                *a = f;
-            }
-            //let a= domain.coeff_to_lagrange(a);
-            KZGCommitmentScheme::commit(&srs, &a) // G1 (curve C) commitment
-        };
-        // ===== prepare for the next iteration =====
+        // --- THEN derive proof_acc from THIS proof, and update acc_goal ----------
+        {
+            let mut transcript = CircuitTranscript::<PoseidonState<Fmm>>::init_from_bytes(&proof);
+            let dual_msm =
+                prepare::<Fmm, KZGCommitmentScheme<E>, CircuitTranscript<PoseidonState<Fmm>>>(
+                    vk.vk(),
+                    &[&[C::identity()]], // committed instances placeholder
+                    &[&[&instance_f]],   // raw PI vector used in *this* proof
+                    &mut transcript,
+                )
+                .expect("prepare(current proof) failed");
+            //assert!(dual_msm.clone().check(&srs.verifier_params()), "dual_msm.check() failed");
 
-        // Save the exact PI vector we used this time; this must be passed to prepare() on the NEXT iteration
-        let instance_f: Vec<F> = instance
-            .iter()
-            .map(|iv| match iv {
-                InputValue::Field(x) => *x,
-                InputValue::Bool(b) => {
-                    if *b {
-                        F::ONE
-                    } else {
-                        F::ZERO
-                    }
-                }
-                InputValue::Byte(b) => F::from(*b as u64),
-                _ => panic!("unsupported"),
-            })
-            .collect();
-        instance_prev = instance_f;
+            //assert!(dual_msm.clone().check(&srs.verifier_params()));
 
-        prev_state = next_state;
-        prev_acc = next_acc;
-        prev_proof = proof; // use as prev_proof in next loop
+            let mut proof_acc: Accumulator<S> = dual_msm.into();
+            proof_acc.extract_fixed_bases(&fixed_bases);
+            proof_acc.collapse();
+
+            // Prepare the witnesses of the next iteration.
+            // --- Roll state forward for next iter -----------------------------------
+            prev_state = next_state;
+            prev_proof = proof;
+            prev_acc = acc.clone();
+            relation.set_prev_acc(
+                /* the circuit's prev_acc for NEXT iter */ prev_acc.clone(),
+            );
+
+            // Accumulate with the *public* next_acc of this iteration (== acc_goal),
+            // collapse => that becomes the acc_goal for the NEXT iteration.
+            let mut accumulated = Accumulator::<S>::accumulate(&[proof_acc, acc.clone()]);
+            accumulated.collapse();
+
+            println!(
+                "accumulated {:?}",
+                AssignedAccumulator::as_public_input(&accumulated)
+            );
+
+            assert!(
+                accumulated.check(&srs.s_g2().into(), &fixed_bases),
+                "IVC acc verification failed"
+            );
+
+            println!("Asserted validity of state {:?}", prev_state);
+
+            acc = accumulated; // <-- this is next iteration's public `next_acc`
+        }
+
+        println!(
+            "next acc off circuit {:?}",
+            AssignedAccumulator::as_public_input(&acc)
+        );
+
+        // ^ If your relation stores prev_acc internally, you may prefer:
+        //   relation.set_prev_acc(AssignedAccumulator::decode_from_public_input(&prev_acc_pi));
+        //   but commonly you'll just keep `acc_goal` as the running accumulator.
     }
 
     println!("All {ITERS} iterations completed.");

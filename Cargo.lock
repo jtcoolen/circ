@@ -572,6 +572,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bench_macros"
+version = "0.1.0"
+source = "git+https://github.com/jtcoolen/midnight-zk#d69efbabee9822f050e95facc463cd7bdb8b64d0"
+dependencies = [
+ "quote 1.0.41",
+ "syn 2.0.106",
+]
+
+[[package]]
 name = "bincode"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1901,8 +1910,8 @@ dependencies = [
 
 [[package]]
 name = "midnight-aggregator"
-version = "0.1.0"
-source = "git+https://github.com/jtcoolen/midnight-zk#159f9c5672910c190c83a44f30aee3175259ff33"
+version = "0.1.2"
+source = "git+https://github.com/jtcoolen/midnight-zk#d69efbabee9822f050e95facc463cd7bdb8b64d0"
 dependencies = [
  "blake2b_simd",
  "ff 0.13.1",
@@ -1917,10 +1926,11 @@ dependencies = [
 
 [[package]]
 name = "midnight-circuits"
-version = "4.0.0"
-source = "git+https://github.com/jtcoolen/midnight-zk#159f9c5672910c190c83a44f30aee3175259ff33"
+version = "5.0.1"
+source = "git+https://github.com/jtcoolen/midnight-zk#d69efbabee9822f050e95facc463cd7bdb8b64d0"
 dependencies = [
  "base64",
+ "bench_macros",
  "bincode 2.0.1",
  "blake2b_simd",
  "ff 0.13.1",
@@ -1933,15 +1943,15 @@ dependencies = [
  "num-integer",
  "num-traits",
  "rand 0.8.5",
- "serde",
+ "rustc-hash",
  "sha2",
  "subtle",
 ]
 
 [[package]]
 name = "midnight-curves"
-version = "0.1.0"
-source = "git+https://github.com/jtcoolen/midnight-zk#159f9c5672910c190c83a44f30aee3175259ff33"
+version = "0.1.1"
+source = "git+https://github.com/jtcoolen/midnight-zk#d69efbabee9822f050e95facc463cd7bdb8b64d0"
 dependencies = [
  "bitvec",
  "blst",
@@ -1959,9 +1969,10 @@ dependencies = [
 
 [[package]]
 name = "midnight-proofs"
-version = "0.4.0"
-source = "git+https://github.com/jtcoolen/midnight-zk#159f9c5672910c190c83a44f30aee3175259ff33"
+version = "0.5.1"
+source = "git+https://github.com/jtcoolen/midnight-zk#d69efbabee9822f050e95facc463cd7bdb8b64d0"
 dependencies = [
+ "bench_macros",
  "blake2b_simd",
  "ff 0.13.1",
  "getrandom 0.2.16",
@@ -2630,6 +2641,12 @@ name = "rustc-demangle"
 version = "0.1.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56f7d92ca342cea22a06f2121d944b4fd82af56988c270852495420f961d4ace"
+
+[[package]]
+name = "rustc-hash"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
 
 [[package]]
 name = "rustc_version"

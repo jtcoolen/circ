@@ -66,10 +66,10 @@ ark-secp256k1 = "0.4.0"
 ark-bn254 = "0.5.0"
 rustfmt = "0.10.0"
 
-midnight-circuits = {git="https://github.com/jtcoolen/midnight-zk"}
+midnight-circuits = {git="https://github.com/jtcoolen/midnight-zk"} #, features = ["truncated-challenges"]}
 midnight-aggregator = {git="https://github.com/jtcoolen/midnight-zk"}
 midnight-curves = {git="https://github.com/jtcoolen/midnight-zk"}
-midnight-proofs = {git="https://github.com/jtcoolen/midnight-zk"}
+midnight-proofs = {git="https://github.com/jtcoolen/midnight-zk", features = ["truncated-challenges"]}
 num-traits = "0.2.19"
 num-bigint = "0.4.6"
 blake2b_simd = "1.0.3"
@@ -85,6 +85,7 @@ approx = "0.5.0"
 
 [features]
 default = ["bincode", "rayon", "r1cs", "zok", "zokc", "bellman"]
+truncated-challenges = ["midnight-proofs/truncated-challenges"]
 # frontends
 c = ["lang-c"]
 zok = ["smt", "zokrates_parser", "zokrates_pest_ast", "typed-arena", "petgraph"]

@@ -56,6 +56,63 @@ use std::convert::TryInto;
 // copied from midnight, make it public upstream?
 pub(crate) const LOG2_BASE: u32 = 96;
 
+pub fn lex_to_numeric_in_place<T>(elems: &mut [T]) {
+    let n = elems.len();
+
+    // order[pos] = numeric index where the element at `pos` should go.
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&i| i.to_string()); // lexicographic by decimal string
+
+    // Apply the permutation in-place using swaps. After each swap,
+    // swap in `order` as well to keep "order[pos] is the target of the element at pos".
+    for i in 0..n {
+        while order[i] != i {
+            let j = order[i];
+            elems.swap(i, j);
+            order.swap(i, j);
+        }
+    }
+}
+
+/// Convenience wrapper that takes ownership and returns the reordered vector.
+pub fn reorder_lex_to_numeric<T>(mut elems: Vec<T>) -> Vec<T> {
+    lex_to_numeric_in_place(&mut elems);
+    elems
+}
+
+/// Reorder a slice from numeric index order (0,1,2,…) to
+/// lexicographic index order ("0","1","10","11","2",…).
+/// Works in-place, O(n log n) due to the sort.
+pub fn reorder_numeric_to_lex_in_place<T>(elems: &mut [T]) {
+    let n = elems.len();
+
+    // lex = indices [0..n) sorted by their decimal-string representation
+    let mut lex: Vec<usize> = (0..n).collect();
+    lex.sort_by_key(|&i| i.to_string());
+
+    // dest[i] = destination position (in lex order) for element currently at numeric index i
+    let mut dest = vec![0usize; n];
+    for (pos, &idx) in lex.iter().enumerate() {
+        dest[idx] = pos;
+    }
+
+    // Apply permutation in-place using swap cycles
+    for i in 0..n {
+        // While the element at i doesn't belong at i, swap it to its destination
+        while dest[i] != i {
+            let j = dest[i];
+            elems.swap(i, j);
+            dest.swap(i, j); // keep mapping consistent with the swap
+        }
+    }
+}
+
+/// Convenience wrapper returning a reordered Vec
+pub fn reorder_numeric_to_lex<T>(mut elems: Vec<T>) -> Vec<T> {
+    reorder_numeric_to_lex_in_place(&mut elems);
+    elems
+}
+
 /// Read a usize from an *Int* constant.
 fn as_usize_int_const(t: &Term) -> usize {
     match t.op() {
@@ -108,6 +165,13 @@ fn be32_from_biguint(n: &BigUint) -> Result<[u8; 32], &'static str> {
     let start = 32 - bytes.len();
     out[start..].copy_from_slice(&bytes); // left-pad with zeros
     Ok(out)
+}
+
+// helper: lexicographic index order: 0,1,10,11,...,19,2,20,...
+fn lex_indices(n: usize) -> Vec<usize> {
+    let mut idxs: Vec<usize> = (0..n).collect();
+    idxs.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
+    idxs
 }
 
 // ---------------------------------------
@@ -265,7 +329,7 @@ struct ToMidnight<'a, 'b, L: Layouter<F>> {
     wmap: &'a HashMap<String, Value<InputValue>>, // witness (private)
     imap: &'a HashMap<String, Value<InputValue>>, // instance/public
     pub_order: &'a [String],                      // ordered public names
-    prev_acc: Accumulator<BlstrsEmulation>,
+    prev_acc: Option<Accumulator<BlstrsEmulation>>,
     vk: Option<MidnightVK>,
 }
 
@@ -278,7 +342,7 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         wmap: &'a HashMap<String, Value<InputValue>>,
         imap: &'a HashMap<String, Value<InputValue>>,
         pub_order: &'a [String],
-        prev_acc: Accumulator<BlstrsEmulation>,
+        prev_acc: Option<Accumulator<BlstrsEmulation>>,
         vk: Option<MidnightVK>,
     ) -> Self {
         Self {
@@ -832,20 +896,24 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
 
         // 0) vk : Field
         let vk_field = self.get_field(&args[0])?.clone();
+        println!("vk_field {:?}", vk_field.clone().value());
 
         // 1) is_genesis : Bool/Field(0/1) → bit
         let is_genesis = self.get_bit(&args[1])?.clone();
+        println!("is_genesis {:?}", is_genesis.clone().value());
         let is_not_genesis = self.std.not(self.lay, &is_genesis)?;
 
         // 2) prev_state : Field
         let prev_state = self.get_field(&args[2])?.clone();
+        println!("prev_state {:?}", prev_state.clone().value());
 
         // 3) prev_acc : field[ACC_SIZE]
         let prev_acc_fields: Vec<AssignedNative<F>> = self.flatten_fields_any(&args[3], None)?;
 
-        for e in &prev_acc_fields {
-            //   println!("e  {:?}", e.value());
-        }
+        //let prev_acc_fields: Vec<AssignedNative<F>> = reorder_lex_to_numeric(prev_acc_fields);
+        //for e in &prev_acc_fields {
+        //   println!("e  {:?}", e.value());
+        //}
         /*assert!(
             !prev_acc_fields.is_empty(),
             "midnight_ivc: prev_acc must be non-empty"
@@ -853,6 +921,13 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
 
         // 4) prev_proof : u8[PROOF_SIZE]
         let proof_bytes_v: Vec<AssignedByte<F>> = self.collect_bytes(&args[4])?;
+
+        //println!(
+        //    "proof bytes circuit : {:?}",
+        //    proof_bytes_v.iter().map(|e| e.value()).collect::<Vec<_>>()
+        //);
+
+        //let proof_bytes_v: Vec<AssignedByte<F>> = reorder_lex_to_numeric(proof_bytes_v);
         let proof_bytes_val: Value<Vec<u8>> = proof_bytes_v.iter().map(|b| b.value()).collect();
 
         //println!("proof bytes {:?}", proof_bytes_val);
@@ -865,24 +940,39 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
 
         let mut arch = m::ZkStdLibArch::default();
         arch.verifier = true;
+        arch.jubjub = false;
+        arch.poseidon = true;
+        arch.sha256 = false;
+        arch.sha512 = false;
+        arch.secp256k1 = false;
+        arch.bls12_381 = false;
+        arch.base64 = false;
+        arch.nr_pow2range_cols = 1; // value does not matter, overridden
+        arch.automaton = false;
         m::ZkStdLib::configure(&mut raw_cs, arch);
-        let (cs_no_selectors, _fixed_cols) = raw_cs
-            .clone()
-            .directly_convert_selectors_to_fixed(vec![vec![false]; raw_cs.num_selectors()]);
-        let cs_no_selectors = if let Some(vk) = &self.vk {
+        let (cs_no_selectors, _) =
+            raw_cs
+                .clone()
+                .directly_convert_selectors_to_fixed(vec![vec![false]; raw_cs.num_selectors()]);
+        /*let cs_no_selectors = if let Some(vk) = &self.vk {
             vk.vk().cs()
         } else {
             &cs_no_selectors
-        };
+        };*/
 
         let domain = EvaluationDomain::new(cs_no_selectors.degree() as u32, 19);
 
         let self_vk_name = "self_vk";
 
         let assigned_vk = if let Some(vk) = &self.vk {
-            let vk_repr = self
+            let vk_repr: midnight_proofs::circuit::AssignedCell<F, F> = self
                 .std
                 .assign(self.lay, Value::known(vk.vk().transcript_repr()))?;
+
+            println!("using SET key {:?}", vk_repr.clone().value());
+            println!("domain = {:?}", vk.vk().get_domain().clone());
+            println!("cs = {:?}", vk.vk().cs().clone());
+            println!("cs_no_selectors = {:?}", cs_no_selectors.clone());
             AssignedVk {
                 vk_name: self_vk_name.to_string(),
                 domain: domain.clone(),
@@ -901,14 +991,41 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         // Identity point for committed-instance binding
         let id_point = self.std.verifier_identity_point(self.lay)?;
 
+        let prev_acc = if let Some(prev_acc) = &self.prev_acc {
+            println!(
+                "prev acc circuit {:?}",
+                AssignedAccumulator::as_public_input(&prev_acc)
+            );
+            Value::known(prev_acc.clone())
+        } else {
+            Value::unknown()
+        };
+
+        let prev_acc_assigned = self.std.verifier_assign_accumulator_from_witness(
+            self.lay,
+            self_vk_name,
+            &assigned_vk.cs, // <-- processed, selector-free CS
+            prev_acc,        // <-- IMPORTANT: do NOT try to build it from concrete F's
+        )?;
+
         // Build PI vector: [vk_pub, prev_state, prev_acc_pub...]
         // TODO take the PI from the IR
         let mut pi: Vec<AssignedNative<F>> = Vec::new();
-        pi.push(assigned_vk.transcript_repr.clone());
-        // TODO is genesis?
-        pi.push(is_genesis.into());
-        pi.extend(prev_acc_fields.clone());
+
+        //pi.extend(prev_acc_fields.clone())
+        //let order = lex_indices(prev_acc_fields.len() as usize);
+        //let prev_acc_fields_lex: Vec<AssignedNative<F>> =
+        //    order.iter().map(|&i| prev_acc_fields[i].clone()).collect();
+        pi.extend(prev_acc_fields);
         pi.push(prev_state.clone());
+        pi.push(assigned_vk.transcript_repr.clone());
+        println!("Pi vk {:?}", assigned_vk.transcript_repr.clone().value());
+
+        println!(
+            "circuit pis = {:?}",
+            pi.iter().map(|e| e.value()).collect::<Vec<_>>().clone()
+        );
+        //println!("circuit proof = {:?}", proof_bytes_val.clone());
 
         // ---- Partial verify + accumulate ------------------------------------
         let mut proof_acc = self.std.verifier_prepare_partial_plonk(
@@ -942,7 +1059,7 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         //   &assigned_vk.cs,
         //   Value::known(prev_acc_pi_enc),
         //)?;
-        // let prev_acc_vec_val: Value<Vec<F>> =
+        //let prev_acc_vec_val: Value<Vec<F>> =
         //    prev_acc_fields.iter().map(|a| a.value().copied()).collect();
 
         // 2) Turn that into a host witness Accumulator (batch = 1).
@@ -964,30 +1081,31 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         );*/
         // println!("ivc fixed bases len = {}", fixed_base_names.len());
 
-        let prev_acc = if let Some(vk) = &self.vk {
-            Value::known(self.prev_acc.clone())
-        } else {
-            Value::unknown()
-        };
-
-        let mut prev_acc = self.std.verifier_assign_accumulator_from_witness(
-            self.lay,
-            self_vk_name,
-            &assigned_vk.cs, // <-- processed, selector-free CS
-            prev_acc,        // <-- IMPORTANT: do NOT try to build it from concrete F's
-        )?;
-
         // Accumulate and collapse to next_acc
-        let mut next_acc = self.std.accumulate(self.lay, &[proof_acc, prev_acc])?;
+        let mut next_acc = self
+            .std
+            .accumulate(self.lay, &[proof_acc, prev_acc_assigned])?;
         self.std.collapse_accumulator(self.lay, &mut next_acc)?;
 
         println!("collapse accu for node");
         // Expose as tuple-of-fields
         let next_acc_field_elts = self.std.verifier().as_public_input(self.lay, &next_acc)?;
+        //let next_acc_elts_lex: Vec<AssignedNative<F>> =
+        //    order.iter().map(|&i| next_acc_field_elts[i].clone()).collect();
+
         let tuple: Vec<AssignedTerm> = next_acc_field_elts
+            .clone()
             .into_iter()
             .map(AssignedTerm::Field)
             .collect();
+
+        println!(
+            "next_acc {:?}",
+            next_acc_field_elts
+                .iter()
+                .map(|e| e.value())
+                .collect::<Vec<_>>()
+        );
 
         self.cache.insert(c.clone(), AssignedTerm::Tuple(tuple));
         Ok(())
@@ -2038,7 +2156,7 @@ pub struct IrRelation<'a> {
     pub public_names: Vec<String>,
     // all input names (order) for witness vector
     pub all_names: Vec<String>,
-    pub prev_acc: Accumulator<BlstrsEmulation>,
+    pub prev_acc: Option<Accumulator<BlstrsEmulation>>,
     pub vk: Option<MidnightVK>,
 }
 
@@ -2124,10 +2242,16 @@ impl<'a> m::Relation for IrRelation<'a> {
 
         // 1) Declare variables
         let vars = self.cs.metadata.interactive_vars();
-        for v in &vars.instances {
+
+        let mut inst_vars = vars.instances.clone();
+        inst_vars.sort_by(|a, b| natural_cmp(a.as_var_name(), b.as_var_name()));
+        for v in &inst_vars {
             ctx.embed_var(v, VarType::Inst)?;
         }
-        for w in &vars.final_witnesses {
+
+        let mut wit_vars = vars.final_witnesses.clone();
+        wit_vars.sort_by(|a, b| natural_cmp(a.as_var_name(), b.as_var_name()));
+        for w in &wit_vars {
             ctx.embed_var(w, VarType::FinalWit)?;
         }
 
@@ -2148,12 +2272,13 @@ impl<'a> m::Relation for IrRelation<'a> {
         arch.verifier = true;
         arch.jubjub = false;
         arch.poseidon = true;
-        arch.sha256 = None; // disable SHA tables completely
+        arch.sha256 = false; // disable SHA tables completely
         arch.secp256k1 = false;
         arch.bls12_381 = false; // keep OFF; the verifier uses the *self* version below
         arch.base64 = false;
         arch.automaton = false;
         //arch.nr_pow2range_cols = 6;     // or 7 (max); bump parallelism
+
         arch
     }
 
@@ -2168,6 +2293,46 @@ impl<'a> m::Relation for IrRelation<'a> {
     }
 }
 
+impl<'a> IrRelation<'a> {
+    pub fn set_prev_acc(&mut self, acc: Accumulator<BlstrsEmulation>) {
+        self.prev_acc = Some(acc);
+    }
+
+    pub fn set_vk(&mut self, vk: MidnightVK) {
+        self.vk = Some(vk);
+    }
+}
+
+use std::cmp::Ordering;
+
+fn split_numeric_suffix(s: &str) -> (&str, Option<u64>) {
+    // dot form: foo.bar.12
+    if let Some((pre, suf)) = s.rsplit_once('.') {
+        if let Ok(n) = suf.parse::<u64>() {
+            return (pre, Some(n));
+        }
+    }
+    // bracket form: foo[12]
+    if let (Some(l), true) = (s.rfind('['), s.ends_with(']')) {
+        if let Ok(n) = s[l + 1..s.len() - 1].parse::<u64>() {
+            return (&s[..l], Some(n));
+        }
+    }
+    (s, None)
+}
+
+fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let (pa, ia) = split_numeric_suffix(a);
+    let (pb, ib) = split_numeric_suffix(b);
+    match pa.cmp(pb) {
+        Ordering::Equal => match (ia, ib) {
+            (Some(na), Some(nb)) => na.cmp(&nb), // numeric order within same prefix
+            _ => a.cmp(b),                       // fallback to normal lexicographic
+        },
+        other => other, // different prefixes: lexicographic
+    }
+}
+
 // -------------------------------------
 // Builder: produce a Relation for CS
 // -------------------------------------
@@ -2175,17 +2340,22 @@ impl<'a> m::Relation for IrRelation<'a> {
 pub fn to_midnight_relation<'a>(
     cs: &'a Computation,
     cfg: &'a CircCfg,
-    prev_acc: Accumulator<BlstrsEmulation>,
+    prev_acc: Option<Accumulator<BlstrsEmulation>>,
     vk: Option<MidnightVK>,
 ) -> IrRelation<'a> {
-    let public_names: Vec<String> = cs
+    let mut public_names: Vec<String> = cs
         .metadata
         .interactive_vars()
         .instances
         .iter()
         .map(|t| t.as_var_name().to_owned())
         .collect();
-    let all_names = cs.metadata.ordered_input_names();
+
+    public_names.sort_by(|a, b| natural_cmp(a, b));
+
+    let mut all_names = cs.metadata.ordered_input_names();
+    all_names.sort_by(|a, b| natural_cmp(a, b));
+
     ark_std::println!(
         "Midnight relation: {} public inputs, {} total inputs",
         public_names.len(),

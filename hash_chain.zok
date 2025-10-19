@@ -1,19 +1,19 @@
-const u32 ACC_SIZE = 64u32
-const u32 PROOF_SIZE = 6240u32
+const u32 ACC_SIZE = 65u32
+const u32 PROOF_SIZE = 6432u32
 
 struct IVC_Step {
-    field[ACC_SIZE] next_acc
     field next_state
+    field[ACC_SIZE] next_acc
 }
 
-// todo is_genesis is public, how come the proof verification passes without it in the PI vector?
 def main(field vk,\
-         bool is_genesis,\
+         private bool is_genesis,\
          private field prev_state,\
          private field[ACC_SIZE] prev_acc,\
          private u8[PROOF_SIZE] prev_proof) -> IVC_Step:
    
-    field next_state = midnight_poseidon([prev_state])
+    //field next_state = midnight_poseidon([prev_state])
+    field next_state = prev_state + 1
    
     field[ACC_SIZE] next_acc = midnight_ivc(vk, is_genesis, prev_state, prev_acc, prev_proof)
 
