@@ -574,7 +574,7 @@ dependencies = [
 [[package]]
 name = "bench_macros"
 version = "0.1.0"
-source = "git+https://github.com/jtcoolen/midnight-zk#d69efbabee9822f050e95facc463cd7bdb8b64d0"
+source = "git+https://github.com/jtcoolen/midnight-zk#8630c017c7314f488e2a141c4b6a82112d1635f7"
 dependencies = [
  "quote 1.0.41",
  "syn 2.0.106",
@@ -1911,7 +1911,7 @@ dependencies = [
 [[package]]
 name = "midnight-aggregator"
 version = "0.1.2"
-source = "git+https://github.com/jtcoolen/midnight-zk#d69efbabee9822f050e95facc463cd7bdb8b64d0"
+source = "git+https://github.com/jtcoolen/midnight-zk#8630c017c7314f488e2a141c4b6a82112d1635f7"
 dependencies = [
  "blake2b_simd",
  "ff 0.13.1",
@@ -1927,7 +1927,7 @@ dependencies = [
 [[package]]
 name = "midnight-circuits"
 version = "5.0.1"
-source = "git+https://github.com/jtcoolen/midnight-zk#d69efbabee9822f050e95facc463cd7bdb8b64d0"
+source = "git+https://github.com/jtcoolen/midnight-zk#8630c017c7314f488e2a141c4b6a82112d1635f7"
 dependencies = [
  "base64",
  "bench_macros",
@@ -1951,7 +1951,7 @@ dependencies = [
 [[package]]
 name = "midnight-curves"
 version = "0.1.1"
-source = "git+https://github.com/jtcoolen/midnight-zk#d69efbabee9822f050e95facc463cd7bdb8b64d0"
+source = "git+https://github.com/jtcoolen/midnight-zk#8630c017c7314f488e2a141c4b6a82112d1635f7"
 dependencies = [
  "bitvec",
  "blst",
@@ -1970,7 +1970,7 @@ dependencies = [
 [[package]]
 name = "midnight-proofs"
 version = "0.5.1"
-source = "git+https://github.com/jtcoolen/midnight-zk#d69efbabee9822f050e95facc463cd7bdb8b64d0"
+source = "git+https://github.com/jtcoolen/midnight-zk#8630c017c7314f488e2a141c4b6a82112d1635f7"
 dependencies = [
  "bench_macros",
  "blake2b_simd",

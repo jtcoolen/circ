@@ -965,11 +965,11 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         let self_vk_name = "self_vk";
 
         let assigned_vk = if let Some(vk) = &self.vk {
-            let vk_repr: midnight_proofs::circuit::AssignedCell<F, F> = self
-                .std
-                .assign(self.lay, Value::known(vk.vk().transcript_repr()))?;
+            //let vk_repr: midnight_proofs::circuit::AssignedCell<F, F> = self
+            //    .std
+            //    .assign(self.lay, vk_field)?; //Value::known(vk.vk().transcript_repr()))?;
 
-            println!("using SET key {:?}", vk_repr.clone().value());
+            println!("using SET key {:?}", vk_field.clone().value());
             println!("domain = {:?}", vk.vk().get_domain().clone());
             println!("cs = {:?}", vk.vk().cs().clone());
             println!("cs_no_selectors = {:?}", cs_no_selectors.clone());
@@ -977,7 +977,7 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                 vk_name: self_vk_name.to_string(),
                 domain: domain.clone(),
                 cs: cs_no_selectors.clone(),
-                transcript_repr: vk_repr,
+                transcript_repr: vk_field,
             }
         } else {
             AssignedVk {
@@ -1065,14 +1065,7 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         // 2) Turn that into a host witness Accumulator (batch = 1).
         //let prev_acc_witness: Value<Accumulator<BlstrsEmulation>> = prev_acc_vec_val
         //    .map(|fs| AssignedAccumulator::<BlstrsEmulation>::from_public_input(fs, 1));
-        use midnight_circuits::verifier;
-        let cs = cs_no_selectors.clone();
-        let mut fixed_base_names = vec![String::from("com_instance")];
-        fixed_base_names.extend(verifier::fixed_base_names::<BlstrsEmulation>(
-            self_vk_name,
-            cs.num_fixed_columns() + cs.num_selectors(),
-            cs.permutation().columns.len(),
-        ));
+
         /*println!(
             "cs fixed cols {}, num selectors {}, perm cols len {}",
             cs.num_fixed_columns(),

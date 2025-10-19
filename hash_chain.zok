@@ -13,7 +13,7 @@ def main(field vk,\
          private u8[PROOF_SIZE] prev_proof) -> IVC_Step:
    
     //field next_state = midnight_poseidon([prev_state])
-    field next_state = prev_state + 1
+    field next_state = prev_state + 2
    
     field[ACC_SIZE] next_acc = midnight_ivc(vk, is_genesis, prev_state, prev_acc, prev_proof)
 

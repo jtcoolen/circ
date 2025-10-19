@@ -21,6 +21,7 @@ use ff::derive::bitvec::field;
 use fxhash::FxHashMap;
 use im::HashMap;
 use midnight_circuits::compact_std_lib::MidnightCircuit;
+use midnight_circuits::testing_utils::plonk_api::BlstPLONK;
 use midnight_circuits::types::AssignedByte;
 use rsmt2::print;
 use rug::Integer;
@@ -3043,6 +3044,10 @@ fn main() {
         ),
     );
 
+    let mut t = trivial_acc.clone();
+    t.collapse();
+    assert!(t.check(&srs.s_g2().into(), &fixed_bases));
+
     relation.set_prev_acc(trivial_acc.clone());
 
     // 3) Evolving state across iterations
@@ -3125,7 +3130,7 @@ fn main() {
         // --- PROVE FIRST (like IVC) --------------------------------------------
 
         let now = Instant::now();
-        let proof = m::prove::<IrRelation, PoseidonState<Fmm>>(
+        /*let proof = m::prove::<IrRelation, PoseidonState<Fmm>>(
             &srs,
             &pk,
             &relation,
@@ -3133,7 +3138,27 @@ fn main() {
             witness.clone(),
             rand::rngs::OsRng,
         )
-        .expect("prove failed");
+        .expect("prove failed");*/
+        use midnight_proofs::circuit::Value;
+        let instance_f: Vec<F> = circ::target::halo2::trans::IrRelation::format_instance(&instance);
+        //let com_inst = R::format_committed_instances(&witness);
+        let circuit = MidnightCircuit::new(
+            &relation,
+            Value::known(instance.clone()),
+            Value::known(witness),
+            Some(pk.max_bit_len()),
+        );
+        let proof = BlstPLONK::<MidnightCircuit<IrRelation>>::prove::<PoseidonState<Fmm>>(
+            &srs,
+            &pk.pk(),
+            &circuit,
+            1,
+            &[&[], &instance_f],
+            OsRng,
+            #[cfg(feature = "bench-internal")]
+            _group,
+        )
+        .unwrap();
 
         println!("prove (iter {it}) took {:?}", now.elapsed());
         println!("proof len {}", proof.len());
@@ -3147,10 +3172,6 @@ fn main() {
                 .map(|n| (n, assign.get(n).unwrap().clone()))
                 .collect::<Vec<_>>()
         );
-
-        // Format the EXACT PI vector used for this proof.
-        // Use it again for `prepare` on THIS proof we just made.
-        let instance_f: Vec<F> = circ::target::halo2::trans::IrRelation::format_instance(&instance);
 
         // --- THEN derive proof_acc from THIS proof, and update acc_goal ----------
         {
@@ -3178,6 +3199,28 @@ fn main() {
             prev_acc = acc.clone();
             relation.set_prev_acc(
                 /* the circuit's prev_acc for NEXT iter */ prev_acc.clone(),
+            );
+
+            println!(
+                "trivial acc off circuit {:?}",
+                AssignedAccumulator::as_public_input(&trivial_acc)
+            );
+
+            println!("fixed bases {:?}", fixed_bases);
+            // A. The trivial accumulator should be valid on its own.
+            let mut acc_only = acc.clone();
+            acc_only.collapse();
+            assert!(
+                acc_only.check(&srs.s_g2().into(), &fixed_bases),
+                "RHS acc alone fails invariant; fixed_bases or trivial_acc construction is wrong"
+            );
+
+            // B. The proof accumulator should be valid on its own.
+            let mut p_only = proof_acc.clone();
+            p_only.collapse();
+            assert!(
+                p_only.check(&srs.s_g2().into(), &fixed_bases),
+                "proof_acc alone fails invariant; PI encoding or prepare(..) inputs mismatch"
             );
 
             // Accumulate with the *public* next_acc of this iteration (== acc_goal),

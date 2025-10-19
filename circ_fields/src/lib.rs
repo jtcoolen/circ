@@ -314,7 +314,7 @@ impl FieldV {
         let ptr: *const FullFieldV = self.0 as *const _;
         unsafe { &*ptr }
     }
-    fn full_cow(&self) -> std::borrow::Cow<FullFieldV> {
+    fn full_cow(&self) -> std::borrow::Cow<'_, FullFieldV> {
         if self.is_full() {
             std::borrow::Cow::Borrowed(self.full_ref())
         } else {
