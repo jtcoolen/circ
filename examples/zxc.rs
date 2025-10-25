@@ -23,6 +23,8 @@ use im::HashMap;
 use midnight_circuits::compact_std_lib::MidnightCircuit;
 use midnight_circuits::testing_utils::plonk_api::BlstPLONK;
 use midnight_circuits::types::AssignedByte;
+use midnight_proofs::halo2curves;
+use midnight_proofs::plonk::ConstraintSystem;
 use rsmt2::print;
 use rug::Integer;
 use std::sync::Arc;
@@ -87,6 +89,31 @@ pub fn lex_to_numeric_in_place<T>(elems: &mut [T]) {
 pub fn reorder_lex_to_numeric<T>(mut elems: Vec<T>) -> Vec<T> {
     lex_to_numeric_in_place(&mut elems);
     elems
+}
+
+fn dump_cs<F: halo2curves::ff::Field>(
+    label: &str,
+    cs: &midnight_proofs::plonk::ConstraintSystem<F>,
+) {
+    let nb_perm_chunks =
+        (cs.permutation().columns.len().saturating_sub(1) / cs.degree().saturating_sub(2)) + 1;
+
+    println!("=== {label} ===");
+    println!("degree                : {}", cs.degree());
+    println!(
+        "advice/fixed/inst     : {}/{}/{}",
+        cs.num_advice_columns(),
+        cs.num_fixed_columns(),
+        cs.num_instance_columns()
+    );
+    println!("selectors             : {}", cs.num_selectors());
+    println!(
+        "perm columns/chunks   : {}/{}",
+        cs.permutation().columns.len(),
+        nb_perm_chunks
+    );
+    println!("lookups               : {}", cs.lookups().len());
+    println!("minimum_rows          : {}", cs.minimum_rows());
 }
 
 /// A row of selector of width `#selectors`
@@ -3010,13 +3037,32 @@ fn main() {
 
     let now = Instant::now();
     let srs: ParamsKZG<Bls12> = filecoin_srs(k);
-    println!("vk");
+
     let vk: m::MidnightVK = m::setup_vk(&srs, &relation);
     relation.set_vk(vk.clone());
 
-    println!("pk");
+    println!("vk k = {}", vk.vk().get_domain().k());
+
+    dump_cs("compact circuit config from vk", vk.vk().cs());
+
+    let mut raw_cs: ConstraintSystem<F> = ConstraintSystem::default();
+    let mut arch = m::ZkStdLibArch::default();
+    arch.verifier = true;
+    arch.jubjub = false;
+    arch.poseidon = true;
+    arch.sha256 = false;
+    arch.sha512 = false;
+    arch.secp256k1 = false;
+    arch.bls12_381 = false;
+    arch.base64 = false;
+    arch.nr_pow2range_cols = 1; // value does not matter, overridden
+    arch.automaton = false;
+    m::ZkStdLib::configure(&mut raw_cs, arch);
+
+    dump_cs("compact circuit config", &raw_cs);
+
     let pk = m::setup_pk(&relation, &vk);
-    println!("pk done");
+    println!("pk done k = {}", pk.k());
 
     println!("setup : {:?}", now.elapsed());
 
@@ -3048,7 +3094,7 @@ fn main() {
     t.collapse();
     assert!(t.check(&srs.s_g2().into(), &fixed_bases));
 
-    relation.set_prev_acc(trivial_acc.clone());
+    //relation.set_prev_acc(trivial_acc.clone());
 
     // 3) Evolving state across iterations
     let mut prev_state: F = F::ZERO;
@@ -3063,13 +3109,27 @@ fn main() {
         AssignedVk::<S>::as_public_input(&vk.vk())
     );
 
+    println!("domain n = {:?}", vk.vk().n());
+    println!("domain = {:?}", vk.vk().get_domain());
+
+    println!("vk_repr host = {:?}", vk.vk().transcript_repr());
+
+    let fb_host = fixed_bases.keys().cloned().collect::<Vec<_>>();
+    println!("fixed_bases_host = {:?}", fb_host);
+
     let mut prev_acc: Accumulator<S> = trivial_acc.clone();
     let mut acc: Accumulator<S> = trivial_acc.clone();
+
+    // Track the PUBLIC next_acc used in the previous proof; seed with trivial acc
+    let mut prev_pi_next_acc: Vec<F> = AssignedAccumulator::as_public_input(&trivial_acc);
 
     // --- ITERATIVE LOOP --------------------------------------------------------
     for it in 0..ITERS {
         println!("--- iteration {} ---", it);
 
+        relation.set_prev_acc(
+            /* the circuit's prev_acc for NEXT iter */ prev_acc.clone(),
+        );
         // Build assignment map
         let mut assign: BTreeMap<String, InputValue> = BTreeMap::new();
 
@@ -3082,10 +3142,13 @@ fn main() {
         assign.insert("prev_state".into(), InputValue::Field(prev_state));
 
         // prev_acc.* (private) — witness the *current* acc_goal
-        let prev_acc_pi: Vec<F> = AssignedAccumulator::as_public_input(&prev_acc);
-        println!("prev acc off circuit {:?}", prev_acc_pi);
-        println!("acc size {}", prev_acc_pi.len());
-        for (i, v) in prev_acc_pi.iter().enumerate() {
+        // let prev_acc_pi: Vec<F> = AssignedAccumulator::as_public_input(&prev_acc);
+        //println!("prev acc off circuit {:?}", prev_acc_pi);
+        //println!("acc size {}", prev_acc_pi.len());
+        // prev_acc.* (private fields) — but used as the PI vector for re-verifying
+        // the previous proof; MUST equal the previous iteration's PUBLIC next_acc.
+        println!("acc size {}", prev_pi_next_acc.len());
+        for (i, v) in prev_pi_next_acc.iter().enumerate() {
             assign.insert(format!("prev_acc.{i}"), InputValue::Field(*v));
         }
 
@@ -3141,6 +3204,11 @@ fn main() {
         .expect("prove failed");*/
         use midnight_proofs::circuit::Value;
         let instance_f: Vec<F> = circ::target::halo2::trans::IrRelation::format_instance(&instance);
+
+        //let mut pi: Vec<F> = Vec::new();
+        //pi.extend(prev_pi_next_acc);                   // prev_acc in as_public_input order
+        //pi.push(prev_state.clone());                  // state_{i-1}+1 == prev_state_i
+        //pi.push(vk_field.clone()); // vk
         //let com_inst = R::format_committed_instances(&witness);
         let circuit = MidnightCircuit::new(
             &relation,
@@ -3160,9 +3228,16 @@ fn main() {
         )
         .unwrap();
 
+        println!("host_PIs(create_proof) = {:?}", instance_f);
+
+        assert_eq!(
+            proof.len(),
+            PROOF_WITNESS_LEN as usize,
+            "PROOF_SIZE mismatch"
+        );
         println!("prove (iter {it}) took {:?}", now.elapsed());
         println!("proof len {}", proof.len());
-        //println!("proof is {:?}", proof);
+        println!("proof is {:?}", proof);
 
         println!(
             "PIs {:?}",
@@ -3173,13 +3248,20 @@ fn main() {
                 .collect::<Vec<_>>()
         );
 
+        println!("iter={it} prev_state   = {:?}", prev_state);
+        println!("iter={it} state(PI)    = {:?}", next_state); // the one you put in public_inputs
+        println!(
+            "iter={it} acc(PI)      = {:?}",
+            AssignedAccumulator::as_public_input(&acc)
+        );
+
         // --- THEN derive proof_acc from THIS proof, and update acc_goal ----------
         {
             let mut transcript = CircuitTranscript::<PoseidonState<Fmm>>::init_from_bytes(&proof);
             let dual_msm =
                 prepare::<Fmm, KZGCommitmentScheme<E>, CircuitTranscript<PoseidonState<Fmm>>>(
                     vk.vk(),
-                    &[&[C::identity()]], // committed instances placeholder
+                    &[&[C::identity()]], // C::identity() committed instances placeholder
                     &[&[&instance_f]],   // raw PI vector used in *this* proof
                     &mut transcript,
                 )
@@ -3192,36 +3274,25 @@ fn main() {
             proof_acc.extract_fixed_bases(&fixed_bases);
             proof_acc.collapse();
 
+            println!(
+                "iter={it} proof_acc_PI = {:?}",
+                AssignedAccumulator::as_public_input(&proof_acc)
+            );
+
             // Prepare the witnesses of the next iteration.
             // --- Roll state forward for next iter -----------------------------------
             prev_state = next_state;
             prev_proof = proof;
+
+            prev_pi_next_acc = next_acc_pi.clone();
             prev_acc = acc.clone();
-            relation.set_prev_acc(
-                /* the circuit's prev_acc for NEXT iter */ prev_acc.clone(),
-            );
 
-            println!(
-                "trivial acc off circuit {:?}",
-                AssignedAccumulator::as_public_input(&trivial_acc)
-            );
+            //println!(
+            //    "trivial acc off circuit {:?}",
+            //    AssignedAccumulator::as_public_input(&trivial_acc)
+            //);
 
-            println!("fixed bases {:?}", fixed_bases);
-            // A. The trivial accumulator should be valid on its own.
-            let mut acc_only = acc.clone();
-            acc_only.collapse();
-            assert!(
-                acc_only.check(&srs.s_g2().into(), &fixed_bases),
-                "RHS acc alone fails invariant; fixed_bases or trivial_acc construction is wrong"
-            );
-
-            // B. The proof accumulator should be valid on its own.
-            let mut p_only = proof_acc.clone();
-            p_only.collapse();
-            assert!(
-                p_only.check(&srs.s_g2().into(), &fixed_bases),
-                "proof_acc alone fails invariant; PI encoding or prepare(..) inputs mismatch"
-            );
+            //println!("fixed bases {:?}", fixed_bases);
 
             // Accumulate with the *public* next_acc of this iteration (== acc_goal),
             // collapse => that becomes the acc_goal for the NEXT iteration.

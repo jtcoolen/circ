@@ -9,10 +9,13 @@ use bellman::groth16::VerifyingKey;
 use itertools::Itertools;
 use midnight_circuits::compact_std_lib::MidnightVK;
 use midnight_circuits::types::AssignedField;
+use midnight_circuits::verifier;
 use midnight_circuits::verifier::Accumulator;
 use midnight_circuits::verifier::AssignedAccumulator;
 use midnight_circuits::verifier::AssignedMsm;
 use midnight_circuits::verifier::BlstrsEmulation;
+use midnight_circuits::verifier::Msm;
+use midnight_proofs::halo2curves;
 use num_bigint::BigUint;
 use num_traits::{Num, One};
 use rsmt2::print;
@@ -855,6 +858,31 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         }
     }
 
+    fn dump_cs<F: halo2curves::ff::Field>(
+        label: &str,
+        cs: &midnight_proofs::plonk::ConstraintSystem<F>,
+    ) {
+        let nb_perm_chunks =
+            (cs.permutation().columns.len().saturating_sub(1) / cs.degree().saturating_sub(2)) + 1;
+
+        println!("=== {label} ===");
+        println!("degree                : {}", cs.degree());
+        println!(
+            "advice/fixed/inst     : {}/{}/{}",
+            cs.num_advice_columns(),
+            cs.num_fixed_columns(),
+            cs.num_instance_columns()
+        );
+        println!("selectors             : {}", cs.num_selectors());
+        println!(
+            "perm columns/chunks   : {}/{}",
+            cs.permutation().columns.len(),
+            nb_perm_chunks
+        );
+        println!("lookups               : {}", cs.lookups().len());
+        println!("minimum_rows          : {}", cs.minimum_rows());
+    }
+
     // ----------------------------------------
     // Embedding: variables, consts, ops
     // ----------------------------------------
@@ -950,6 +978,9 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         arch.nr_pow2range_cols = 1; // value does not matter, overridden
         arch.automaton = false;
         m::ZkStdLib::configure(&mut raw_cs, arch);
+
+        Self::dump_cs("embed ivc config", &raw_cs);
+
         let (cs_no_selectors, _) =
             raw_cs
                 .clone()
@@ -960,7 +991,7 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
             &cs_no_selectors
         };*/
 
-        let domain = EvaluationDomain::new(cs_no_selectors.degree() as u32, 19);
+        let domain = EvaluationDomain::new(raw_cs.degree() as u32, 19);
 
         let self_vk_name = "self_vk";
 
@@ -970,13 +1001,15 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
             //    .assign(self.lay, vk_field)?; //Value::known(vk.vk().transcript_repr()))?;
 
             println!("using SET key {:?}", vk_field.clone().value());
-            println!("domain = {:?}", vk.vk().get_domain().clone());
-            println!("cs = {:?}", vk.vk().cs().clone());
-            println!("cs_no_selectors = {:?}", cs_no_selectors.clone());
+            //println!("domain = {:?}", vk.vk().get_domain().clone());
+            //println!("cs = {:?}", vk.vk().cs().clone());
+            //println!("cs_no_selectors = {:?}", cs_no_selectors.clone());
             AssignedVk {
                 vk_name: self_vk_name.to_string(),
-                domain: domain.clone(),
-                cs: cs_no_selectors.clone(),
+                //domain: domain.clone(),
+                //cs: cs_no_selectors.clone(),
+                domain: vk.vk().get_domain().clone(),
+                cs: vk.vk().cs().clone(),
                 transcript_repr: vk_field,
             }
         } else {
@@ -987,26 +1020,49 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
                 transcript_repr: vk_field,
             }
         };
+
+        println!("vk_repr circ = {:?}", assigned_vk.transcript_repr.value());
 
         // Identity point for committed-instance binding
         let id_point = self.std.verifier_identity_point(self.lay)?;
 
         let prev_acc = if let Some(prev_acc) = &self.prev_acc {
-            println!(
-                "prev acc circuit {:?}",
-                AssignedAccumulator::as_public_input(&prev_acc)
-            );
+            //println!(
+            //    "prev acc circuit {:?}",
+            //    AssignedAccumulator::as_public_input(&prev_acc)
+            //);
             Value::known(prev_acc.clone())
         } else {
             Value::unknown()
         };
 
-        let prev_acc_assigned = self.std.verifier_assign_accumulator_from_witness(
-            self.lay,
+        let prev_acc_assigned: AssignedAccumulator<BlstrsEmulation> =
+            self.std.verifier_assign_accumulator_from_witness(
+                self.lay,
+                self_vk_name,
+                &assigned_vk.cs, // <-- processed, selector-free CS
+                prev_acc,        // <-- IMPORTANT: do NOT try to build it from concrete F's
+            )?;
+
+        let mut fixed_base_names = vec![String::from("com_instance")];
+        fixed_base_names.extend(verifier::fixed_base_names::<BlstrsEmulation>(
             self_vk_name,
-            &assigned_vk.cs, // <-- processed, selector-free CS
-            prev_acc,        // <-- IMPORTANT: do NOT try to build it from concrete F's
-        )?;
+            raw_cs.num_fixed_columns() + raw_cs.num_selectors(),
+            raw_cs.permutation().columns.len(),
+        ));
+        println!("fixed_bases_circ = {:?}", fixed_base_names);
+
+        let prev_acc_pi_enc = self
+            .std
+            .verifier()
+            .as_public_input(self.lay, &prev_acc_assigned)?;
+        let eqs: Vec<AssignedBit<F>> = prev_acc_pi_enc
+            .iter()
+            .zip(prev_acc_fields.iter())
+            .map(|(a, b)| self.std.is_equal(self.lay, a, b))
+            .collect::<Result<Vec<_>, _>>()?;
+        let all = self.nary_and(&eqs)?;
+        self.std.assert_true(self.lay, &all)?;
 
         // Build PI vector: [vk_pub, prev_state, prev_acc_pub...]
         // TODO take the PI from the IR
@@ -1016,7 +1072,12 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
         //let order = lex_indices(prev_acc_fields.len() as usize);
         //let prev_acc_fields_lex: Vec<AssignedNative<F>> =
         //    order.iter().map(|&i| prev_acc_fields[i].clone()).collect();
-        pi.extend(prev_acc_fields);
+        pi.extend(
+            self.std
+                .verifier()
+                .as_public_input(self.lay, &prev_acc_assigned)
+                .unwrap(),
+        ); //prev_acc_fields);
         pi.push(prev_state.clone());
         pi.push(assigned_vk.transcript_repr.clone());
         println!("Pi vk {:?}", assigned_vk.transcript_repr.clone().value());
@@ -1025,7 +1086,7 @@ impl<'a, 'b, L: Layouter<F>> ToMidnight<'a, 'b, L> {
             "circuit pis = {:?}",
             pi.iter().map(|e| e.value()).collect::<Vec<_>>().clone()
         );
-        //println!("circuit proof = {:?}", proof_bytes_val.clone());
+        println!("circuit proof = {:?}", proof_bytes_val.clone());
 
         // ---- Partial verify + accumulate ------------------------------------
         let mut proof_acc = self.std.verifier_prepare_partial_plonk(
@@ -2208,6 +2269,7 @@ impl<'a> m::Relation for IrRelation<'a> {
             .cloned()
             .zip(pi_vec.into_iter())
             .collect();
+        println!("imap {:?}", imap);
         let wmap: HashMap<String, Value<InputValue>> = self
             .all_names
             .iter()
